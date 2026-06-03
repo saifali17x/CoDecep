@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files — never commit secrets
+.env
+.env.local
+
+# Prisma generated client (regenerated via prisma generate)
+node_modules/.prisma/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store

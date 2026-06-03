@@ -1,0 +1,61 @@
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: 44px;
+  background: #323233;
+  border-bottom: 1px solid #3c3c3c;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.top-bar-logo {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #c084fc;
+}
+
+.top-bar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  padding: 5px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  outline: none;
+}
+
+.btn:focus-visible {
+  outline: 2px solid #c084fc;
+  outline-offset: 2px;
+}
+
+.btn-run {
+  background: #3a3a3a;
+  color: #d4d4d4;
+  border: 1px solid #555;
+}
+
+.btn-run:hover {
+  background: #484848;
+  border-color: #777;
+}
+
+.btn-submit {
+  background: #c084fc;
+  color: #1a1a1a;
+  border: 1px solid #c084fc;
+  font-weight: 600;
+}
+
+.btn-submit:hover {
+  opacity: 0.88;
+}

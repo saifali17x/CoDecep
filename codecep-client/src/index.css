@@ -1,0 +1,13 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 14px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: dark;
+}
+
+#root {
+  height: 100vh;
+}

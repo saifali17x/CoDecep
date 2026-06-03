@@ -1,0 +1,19 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model TelemetryPacket {
+  id                       String   @id @default(uuid())
+  timestamp                BigInt
+  timeSinceLastKeystrokeMs Int
+  actionType               String
+  charDelta                Int
+  textLength               Int
+  createdAt                DateTime @default(now())
+
+  @@map("telemetry_packets")
+}

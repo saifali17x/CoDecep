@@ -1,0 +1,65 @@
+.editor-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.editor-tabs {
+  display: flex;
+  background: #2d2d2d;
+  border-bottom: 1px solid #3c3c3c;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 34px;
+  font-size: 13px;
+  color: #969696;
+  cursor: pointer;
+  border-right: 1px solid #3c3c3c;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.editor-tab.active {
+  color: #d4d4d4;
+  background: #1e1e1e;
+  border-top: 2px solid #c084fc;
+}
+
+.tab-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.tab-badge.cpp {
+  background: #5c9fd6;
+  color: #fff;
+}
+
+.tab-close {
+  margin-left: 2px;
+  font-size: 14px;
+  color: #666;
+  line-height: 1;
+  transition: color 0.1s;
+}
+
+.tab-close:hover {
+  color: #d4d4d4;
+}
+
+.editor-body {
+  flex: 1;
+  overflow: hidden;
+}

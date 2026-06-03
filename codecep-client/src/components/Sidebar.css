@@ -1,0 +1,86 @@
+.sidebar {
+  width: 220px;
+  min-width: 220px;
+  background: #252526;
+  border-right: 1px solid #3c3c3c;
+  overflow-y: auto;
+  user-select: none;
+}
+
+.sidebar-header {
+  padding: 10px 12px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #bbb;
+  text-transform: uppercase;
+}
+
+.sidebar-folder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #d4d4d4;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.folder-caret {
+  font-size: 8px;
+  color: #858585;
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 22px;
+  font-size: 13px;
+  color: #ccc;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.file-item:hover {
+  background: #2a2d2e;
+}
+
+.file-item.active {
+  background: #37373d;
+  color: #fff;
+}
+
+.file-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.file-badge--cpp {
+  background: #5c9fd6;
+  color: #fff;
+}
+
+.file-badge--md {
+  background: #4caf70;
+  color: #fff;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
