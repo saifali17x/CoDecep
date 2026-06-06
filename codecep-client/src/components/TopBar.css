@@ -59,3 +59,24 @@
 .btn-submit:hover {
   opacity: 0.88;
 }
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lang-select {
+  background: #3a3a3a;
+  color: #d4d4d4;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.lang-select:focus {
+  border-color: #c084fc;
+}

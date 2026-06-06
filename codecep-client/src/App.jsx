@@ -15,12 +15,12 @@ int main() {
 }
 `
 
-const LANGUAGE = 'cpp'
-
 function App() {
   const [code, setCode] = useState(DEFAULT_CODE)
+  const [language, setLanguage] = useState('cpp')
   const [cursor, setCursor] = useState({ line: 1, col: 1 })
   const [terminalLines, setTerminalLines] = useState([])
+  const [isRunning, setIsRunning] = useState(false)
 
   async function handleFlush(chunk) {
     setTerminalLines((prev) => {
@@ -54,15 +54,38 @@ function App() {
     }
   }
 
+  async function handleRun() {
+    setIsRunning(true)
+    try {
+      const res = await fetch('http://localhost:3001/api/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, lang: language }),
+      })
+      const data = await res.json()
+      setTerminalLines((prev) => [
+        ...prev,
+        { kind: 'output', output: data.output ?? data.error ?? 'No output returned.' },
+      ])
+    } catch (err) {
+      setTerminalLines((prev) => [
+        ...prev,
+        { kind: 'output', output: `Network error — ${err.message}` },
+      ])
+    } finally {
+      setIsRunning(false)
+    }
+  }
+
   return (
     <div className="app">
-      <TopBar />
+      <TopBar onRun={handleRun} isRunning={isRunning} language={language} onLanguageChange={setLanguage} />
       <div className="workspace">
         <Sidebar />
         <div className="main-content">
           <EditorPane
             code={code}
-            language={LANGUAGE}
+            language={language}
             onChange={setCode}
             onCursorChange={(line, col) => setCursor({ line, col })}
             onFlush={handleFlush}
@@ -70,7 +93,7 @@ function App() {
           <Terminal lines={terminalLines} />
         </div>
       </div>
-      <StatusBar language={LANGUAGE} line={cursor.line} col={cursor.col} />
+      <StatusBar language={language} line={cursor.line} col={cursor.col} />
     </div>
   )
 }

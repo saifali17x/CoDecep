@@ -36,6 +36,15 @@ export default function Terminal({ lines = [] }) {
               )
             }
 
+            if (line.kind === 'output') {
+              return (
+                <div key={i} className="terminal-output">
+                  <div className="terminal-output-header">[RUN OUTPUT]</div>
+                  <pre className="terminal-output-body">{line.output}</pre>
+                </div>
+              )
+            }
+
             return (
               <div key={i} className="terminal-chunk">
                 <div className="terminal-chunk-header">
