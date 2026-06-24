@@ -1,6 +1,13 @@
-import './TopBar.css'
+import "./TopBar.css";
 
-export default function TopBar({ onRun, isRunning, language, onLanguageChange }) {
+export default function TopBar({
+  onRun,
+  isRunning,
+  language,
+  onLanguageChange,
+  onSubmit,
+  isSubmitted,
+}) {
   return (
     <header className="top-bar">
       <div className="top-bar-brand">
@@ -16,10 +23,16 @@ export default function TopBar({ onRun, isRunning, language, onLanguageChange })
           <option value="c">C</option>
         </select>
         <button className="btn btn-run" onClick={onRun} disabled={isRunning}>
-          {isRunning ? 'Running...' : '▶ Run Code'}
+          {isRunning ? "Running..." : "▶ Run Code"}
         </button>
-        <button className="btn btn-submit">Submit</button>
+        <button
+          className="btn btn-submit"
+          onClick={onSubmit}
+          disabled={isSubmitted}
+        >
+          {isSubmitted ? "✓ Submitted" : "Submit"}
+        </button>
       </div>
     </header>
-  )
+  );
 }

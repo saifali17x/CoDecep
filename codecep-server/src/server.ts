@@ -1,7 +1,7 @@
 import express, { Request, Response } from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
-import { Queue, Worker } from 'bullmq'
+import { Queue } from 'bullmq'
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
@@ -27,30 +27,10 @@ const prisma = new PrismaClient({ adapter })
 // ── BullMQ queue ───────────────────────────────────────────────────────────
 const telemetryQueue = new Queue('telemetryQueue', { connection: redisConnection })
 
-// ── BullMQ worker (decoupled DB writer) ────────────────────────────────────
-const telemetryWorker = new Worker(
-  'telemetryQueue',
-  async (job) => {
-    const events: TelemetryEvent[] = job.data
-
-    await prisma.telemetryPacket.createMany({
-      data: events.map((ev) => ({
-        timestamp: BigInt(ev.timestamp),
-        timeSinceLastKeystrokeMs: ev.timeSinceLastKeystrokeMs,
-        actionType: ev.actionType,
-        charDelta: ev.charDelta,
-        textLength: ev.textLength,
-      })),
-    })
-
-    console.log(`[WORKER] Wrote ${events.length} event(s) to PostgreSQL`)
-  },
-  { connection: redisConnection }
-)
-
-telemetryWorker.on('failed', (job, err) => {
-  console.error(`[WORKER] Job ${job?.id} failed:`, err.message)
-})
+// ── BullMQ worker ──────────────────────────────────────────────────────────
+// Worker is intentionally absent here. Per the new architecture, the heavy
+// forensics worker fires exactly ONCE when session status → SUBMITTED.
+// It will be wired in Phase 5 (Post-Submission Forensics).
 
 // ── Express setup ──────────────────────────────────────────────────────────
 app.use(cors({
@@ -65,27 +45,93 @@ app.use(cors({
 
 app.use(express.json())
 
-interface TelemetryEvent {
+// ── POST /api/session/create ──────────────────────────────────────────────
+app.post('/api/session/create', async (req: Request, res: Response) => {
+  const { studentId } = req.body
+
+  if (typeof studentId !== 'string' || studentId.trim().length === 0) {
+    res.status(400).json({ error: 'studentId is required.' })
+    return
+  }
+
+  const existing = await prisma.session.findFirst({
+    where: { studentId, status: 'IN_PROGRESS' },
+  })
+  if (existing) {
+    console.log(`[SESSION] Returning existing session ${existing.id} for ${studentId}`)
+    res.json({ sessionId: existing.id })
+    return
+  }
+
+  const session = await prisma.session.create({
+    data: { studentId, status: 'IN_PROGRESS' },
+  })
+  console.log(`[SESSION] Created new session ${session.id} for ${studentId}`)
+  res.json({ sessionId: session.id })
+})
+
+// ── POST /api/telemetry/submit ─────────────────────────────────────────────
+interface KeystrokeEvent {
   timestamp: number
   timeSinceLastKeystrokeMs: number
-  actionType: 'type' | 'delete' | 'paste'
+  actionType: 'type' | 'paste' | 'delete'
   charDelta: number
   textLength: number
 }
 
-// ── POST /api/telemetry/submit ─────────────────────────────────────────────
 app.post('/api/telemetry/submit', async (req: Request, res: Response) => {
-  const payload: TelemetryEvent[] = req.body
+  const { sessionId, studentId, chunk, codeSnapshot } = req.body
 
-  if (!Array.isArray(payload) || payload.length === 0) {
-    res.status(400).json({ error: 'Payload must be a non-empty array of telemetry events.' })
+  if (!sessionId || !Array.isArray(chunk) || chunk.length === 0) {
+    res.status(400).json({ error: 'Invalid payload: sessionId and non-empty chunk are required.' })
     return
   }
 
-  await telemetryQueue.add('process-chunk', payload)
-  console.log(`[INGESTION] Queued chunk of ${payload.length} event(s) → Redis`)
+  const events: KeystrokeEvent[] = chunk
 
-  res.status(202).json({ accepted: payload.length })
+  const playbackEntry = {
+    flushedAt: Date.now(),
+    codeSnapshot: codeSnapshot ?? '',
+    events,
+  }
+
+  const deltas = events.map((e) => e.timeSinceLastKeystrokeMs).filter((d) => d > 0)
+  const mean = deltas.length ? deltas.reduce((a, b) => a + b, 0) / deltas.length : 0
+  const burstEntry = {
+    flushedAt: Date.now(),
+    eventCount: events.length,
+    meanTimeBetweenKeystrokes: Math.round(mean),
+    pasteCount: events.filter((e) => e.actionType === 'paste').length,
+    deleteCount: events.filter((e) => e.actionType === 'delete').length,
+    totalCharDelta: events.reduce((sum, e) => sum + e.charDelta, 0),
+  }
+
+  await prisma.$executeRaw`
+    UPDATE sessions
+    SET playback_log  = playback_log  || ${JSON.stringify([playbackEntry])}::jsonb,
+        burst_history = burst_history || ${JSON.stringify([burstEntry])}::jsonb,
+        "updatedAt"   = NOW()
+    WHERE id = ${sessionId}
+  `
+
+  console.log(`[INGEST] session=${sessionId} +${events.length} events appended`)
+  res.status(202).json({ accepted: events.length })
+})
+
+// ── POST /api/session/:id/submit ──────────────────────────────────────────
+app.post('/api/session/:id/submit', async (req: Request, res: Response) => {
+  const sessionId = String(req.params.id)
+  try {
+    const session = await prisma.session.update({
+      where: { id: sessionId, status: 'IN_PROGRESS' },
+      data: { status: 'SUBMITTED' },
+    })
+    await telemetryQueue.add('forensics', { sessionId: session.id })
+    console.log(`[SUBMIT] Session ${session.id} → SUBMITTED, forensics job enqueued`)
+    res.status(200).json({ status: 'SUBMITTED' })
+  } catch {
+    res.status(200).json({ status: 'ALREADY_SUBMITTED' })
+  }
 })
 
 // ── POST /api/ast/validate ─────────────────────────────────────────────────
