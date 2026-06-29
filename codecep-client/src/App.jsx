@@ -4,7 +4,12 @@ import Sidebar from "./components/Sidebar";
 import EditorPane from "./components/EditorPane";
 import Terminal from "./components/Terminal";
 import StatusBar from "./components/StatusBar";
+import socket from "./socket";
 import "./App.css";
+
+// LIVE_LAB = tab-out alerts are active. ASSESSMENT = tab-outs are ignored.
+// Will come from assignment config in a future phase.
+const LAB_MODE = "LIVE_LAB"; // 'LIVE_LAB' | 'ASSESSMENT'
 
 const DEFAULT_CODE = `#include <iostream>
 using namespace std;
@@ -32,6 +37,10 @@ function App() {
   const sessionStatusRef = useRef("IN_PROGRESS");
   const codeRef = useRef(DEFAULT_CODE);
 
+  // Focus-gated timer — counts milliseconds while the tab is visible
+  const engagedTimeRef = useRef(0);   // banked ms from past focus windows
+  const focusStartRef = useRef(null); // Date.now() when current focus window opened
+
   // Keep codeRef in sync on every code change
   useEffect(() => {
     codeRef.current = code;
@@ -41,6 +50,40 @@ function App() {
   useEffect(() => {
     sessionStatusRef.current = sessionStatus;
   }, [sessionStatus]);
+
+  // Page Visibility API — disarms when submitted, uses sessionStatusRef to avoid stale closure
+  useEffect(() => {
+    focusStartRef.current = document.hidden ? null : Date.now();
+
+    const handleVisibilityChange = () => {
+      if (sessionStatusRef.current === "SUBMITTED") return;
+      if (document.hidden) {
+        // Bank engaged time
+        if (focusStartRef.current !== null) {
+          engagedTimeRef.current += Date.now() - focusStartRef.current;
+          focusStartRef.current = null;
+        }
+        // Tier 1 alert — TAB_OUT (only in LIVE_LAB, never after Submit)
+        if (LAB_MODE === "LIVE_LAB") {
+          const payload = {
+            type: "TAB_OUT",
+            studentId: STUDENT_ID,
+            sessionId: sessionIdRef.current,
+            timestamp: Date.now(),
+            detail: "tab lost focus",
+          };
+          console.log("[EMIT] TAB_OUT", payload);
+          socket.emit("alert", payload);
+        }
+      } else {
+        focusStartRef.current = Date.now();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () =>
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
 
   // Create (or resume) the session on mount
   useEffect(() => {
@@ -53,7 +96,6 @@ function App() {
       .then((data) => {
         setSessionId(data.sessionId);
         sessionIdRef.current = data.sessionId; // ← keep ref in sync for the flush
-        console.log("[SESSION] sessionId:", data.sessionId);
       })
       .catch((err) =>
         console.error("[SESSION] Failed to create session:", err),
@@ -83,6 +125,11 @@ function App() {
     if (currentStatus === "SUBMITTED") return;
     if (!currentSessionId) return;
 
+    // Banked time + time accrued in the current (still-open) focus window
+    const engagedTimeMs =
+      engagedTimeRef.current +
+      (focusStartRef.current !== null ? Date.now() - focusStartRef.current : 0);
+
     setTerminalLines((prev) => {
       const chunkNum = prev.filter((l) => l.kind === "chunk").length + 1;
       return [
@@ -100,6 +147,7 @@ function App() {
           studentId: STUDENT_ID,
           chunk,
           codeSnapshot: currentCode,
+          engagedTimeMs,
         }),
       });
       const data = await res.json();
@@ -140,7 +188,7 @@ function App() {
       const res = await fetch("http://localhost:3001/api/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, lang: language }),
+        body: JSON.stringify({ code, lang: language, sessionId: sessionIdRef.current }),
       });
       const data = await res.json();
       setTerminalLines((prev) => [
@@ -180,6 +228,9 @@ function App() {
             onCursorChange={(line, col) => setCursor({ line, col })}
             onFlush={handleFlush}
             isSubmitted={sessionStatus === "SUBMITTED"}
+            studentId={STUDENT_ID}
+            sessionIdRef={sessionIdRef}
+            labMode={LAB_MODE}
           />
           <Terminal lines={terminalLines} />
         </div>

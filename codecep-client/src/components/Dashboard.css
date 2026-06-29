@@ -1,0 +1,63 @@
+.dashboard {
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  min-height: 100vh;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.dash-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #30363d;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+}
+
+.dash-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+
+.dash-status {
+  font-size: 12px;
+}
+.dash-status.connected { color: #3fb950; }
+.dash-status.disconnected { color: #f85149; }
+
+.dash-empty {
+  color: #6e7681;
+  font-size: 13px;
+  margin-top: 40px;
+  text-align: center;
+}
+
+.dash-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dash-table th {
+  text-align: left;
+  color: #6e7681;
+  font-weight: 400;
+  padding: 6px 12px;
+  border-bottom: 1px solid #21262d;
+}
+
+.dash-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid #161b22;
+}
+
+.dash-table tbody tr:hover { background: #161b22; }
+
+.col-time    { color: #6e7681; white-space: nowrap; }
+.col-type    { font-weight: 600; }
+.col-student { color: #79c0ff; }
+.col-session { color: #6e7681; font-size: 11px; }
+.col-detail  { color: #8b949e; }
