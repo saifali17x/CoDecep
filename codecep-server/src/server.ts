@@ -7,7 +7,11 @@ import { Queue, Worker } from 'bullmq'
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
+import bcrypt from 'bcryptjs'
+import multer from 'multer'
 import { validateAST } from './ast/parser'
+import { computeMetricA, computeLinearInjection, computeRoboticVariance } from './forensics/metrics'
+import { signToken, requireAuth, requireRole } from './auth'
 
 dotenv.config()
 
@@ -29,57 +33,6 @@ const prisma = new PrismaClient({ adapter })
 // ── BullMQ queue ───────────────────────────────────────────────────────────
 const telemetryQueue = new Queue('telemetryQueue', { connection: redisConnection })
 
-// ── Metric B — Linear Injection Detection ─────────────────────────────────
-// Thresholds are named constants so they can be tuned without hunting through logic.
-const LINEAR_DELETE_RATIO_MAX = 0.02       // flag if fewer than 2% of events are deletions
-const LINEAR_SINGLE_CHAR_RATIO_MIN = 0.90  // flag if more than 90% are single-char forward types
-
-interface PlaybackEvent {
-  timestamp: number
-  timeSinceLastKeystrokeMs: number
-  actionType: 'type' | 'paste' | 'delete'
-  charDelta: number
-  textLength: number
-}
-
-interface PlaybackEntry {
-  flushedAt: number
-  codeSnapshot: string
-  events: PlaybackEvent[]
-}
-
-function computeLinearInjection(playbackLog: unknown) {
-  const entries = (playbackLog as PlaybackEntry[]) ?? []
-  const allEvents: PlaybackEvent[] = entries.flatMap((entry) => entry.events ?? [])
-  const totalEvents = allEvents.length
-
-  if (totalEvents < 20) {
-    return {
-      flag: false,
-      reason: 'Session too short to assess linearity',
-      stats: { totalEvents, deleteCount: 0, deleteRatio: 0, singleCharTypeRatio: 0, pasteCount: 0 },
-    }
-  }
-
-  const deleteCount = allEvents.filter((e) => e.actionType === 'delete').length
-  const deleteRatio = deleteCount / totalEvents
-  const singleCharTypeCount = allEvents.filter(
-    (e) => e.actionType === 'type' && Math.abs(e.charDelta) <= 2
-  ).length
-  const singleCharTypeRatio = singleCharTypeCount / totalEvents
-  const pasteCount = allEvents.filter((e) => e.actionType === 'paste').length
-
-  const flag = deleteRatio < LINEAR_DELETE_RATIO_MAX && singleCharTypeRatio > LINEAR_SINGLE_CHAR_RATIO_MIN
-
-  return {
-    flag,
-    reason: flag
-      ? 'Highly linear keystroke stream (minimal backtracking) — probabilistic signal of transcription/auto-typing; requires instructor review'
-      : null,
-    stats: { totalEvents, deleteCount, deleteRatio, singleCharTypeRatio, pasteCount },
-  }
-}
-
 // ── BullMQ forensics worker (Phase 5 — fires ONCE per submission) ─────────
 // Constraint 2: this worker is NEVER in the ingest path. It only runs after
 // POST /api/session/:id/submit transitions the session to SUBMITTED.
@@ -95,27 +48,19 @@ const forensicsWorker = new Worker(
       return
     }
 
-    // Metric A — Trial-and-error: genuine work has many compile attempts;
-    // a pasted solution typically has 0–1. This is a probabilistic signal
-    // to be reviewed by an instructor, not a definitive verdict.
     const runCount = session.runCount ?? 0
-    const metricA = {
-      runCount,
-      flag: runCount <= 1,
-      reason: runCount <= 1
-        ? 'Low compile count — probabilistic signal of pasted solution; requires instructor review'
-        : null,
-    }
-
+    const metricA = computeMetricA(runCount)
     const metricB = computeLinearInjection(session.playback_log)
+    const metricC = computeRoboticVariance(session.burst_history)
 
     await prisma.session.update({
       where: { id: sessionId },
-      data: { forensicsResults: { metricA, metricB } },
+      data: { forensicsResults: { metricA, metricB, metricC } },
     })
 
     console.log(`[FORENSICS] Session ${sessionId} processed — metricA runCount=${runCount} flag=${metricA.flag}`)
     console.log(`[FORENSICS] session ${sessionId} metricB flag=${metricB.flag} deleteRatio=${metricB.stats.deleteRatio.toFixed(3)} singleCharRatio=${metricB.stats.singleCharTypeRatio.toFixed(3)}`)
+    console.log(`[FORENSICS] session ${sessionId} metricC flag=${metricC.flag} cv=${metricC.stats.cv} sampleCount=${metricC.stats.sampleCount}`)
   },
   { connection: redisConnection },
 )
@@ -139,7 +84,7 @@ app.use(express.json())
 
 // ── POST /api/session/create ──────────────────────────────────────────────
 app.post('/api/session/create', async (req: Request, res: Response) => {
-  const { studentId } = req.body
+  const { studentId, userId, assignmentId } = req.body
 
   if (typeof studentId !== 'string' || studentId.trim().length === 0) {
     res.status(400).json({ error: 'studentId is required.' })
@@ -156,7 +101,13 @@ app.post('/api/session/create', async (req: Request, res: Response) => {
   }
 
   const session = await prisma.session.create({
-    data: { studentId, status: 'IN_PROGRESS' },
+    data: {
+      studentId,
+      status: 'IN_PROGRESS',
+      // Backward compatible: the hardcoded student-001 dev flow sends neither.
+      ...(typeof userId === 'string' && userId.length > 0 ? { userId } : {}),
+      ...(typeof assignmentId === 'string' && assignmentId.length > 0 ? { assignmentId } : {}),
+    },
   })
   console.log(`[SESSION] Created new session ${session.id} for ${studentId}`)
   res.json({ sessionId: session.id })
@@ -304,6 +255,251 @@ app.post('/api/execute', async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : 'Unknown error'
     res.status(502).json({ output: `Failed to reach Judge0 — ${message}` })
   }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Auth + LMS routes (Track A)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── POST /api/auth/register ────────────────────────────────────────────────
+app.post('/api/auth/register', async (req: Request, res: Response) => {
+  const { username, password, role } = req.body
+
+  if (typeof username !== 'string' || username.trim().length === 0 ||
+      typeof password !== 'string' || password.length === 0) {
+    res.status(400).json({ error: 'username and password are required.' })
+    return
+  }
+  if (role !== 'INSTRUCTOR' && role !== 'STUDENT') {
+    res.status(400).json({ error: "role must be 'INSTRUCTOR' or 'STUDENT'." })
+    return
+  }
+
+  const existing = await prisma.user.findUnique({ where: { username } })
+  if (existing) {
+    res.status(409).json({ error: 'Username already taken.' })
+    return
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12)
+  const user = await prisma.user.create({ data: { username, passwordHash, role } })
+  const token = signToken({ userId: user.id, role: user.role })
+  console.log(`[AUTH] Registered ${user.role} ${user.username} (${user.id})`)
+  res.status(201).json({ token, user: { id: user.id, username: user.username, role: user.role } })
+})
+
+// ── POST /api/auth/login ───────────────────────────────────────────────────
+app.post('/api/auth/login', async (req: Request, res: Response) => {
+  const { username, password } = req.body
+
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    res.status(400).json({ error: 'username and password are required.' })
+    return
+  }
+
+  // Same message for unknown user and wrong password — prevents username enumeration.
+  const user = await prisma.user.findUnique({ where: { username } })
+  if (!user) {
+    res.status(401).json({ error: 'Invalid credentials' })
+    return
+  }
+  const valid = await bcrypt.compare(password, user.passwordHash)
+  if (!valid) {
+    res.status(401).json({ error: 'Invalid credentials' })
+    return
+  }
+
+  const token = signToken({ userId: user.id, role: user.role })
+  res.json({ token, user: { id: user.id, username: user.username, role: user.role } })
+})
+
+// ── GET /api/auth/me ───────────────────────────────────────────────────────
+app.get('/api/auth/me', requireAuth, async (req: Request, res: Response) => {
+  // Fetch fresh from DB (not just from token) so role changes are reflected.
+  const user = await prisma.user.findUnique({ where: { id: req.user!.userId } })
+  if (!user) {
+    res.status(401).json({ error: 'User no longer exists.' })
+    return
+  }
+  res.json({ id: user.id, username: user.username, role: user.role })
+})
+
+// ── POST /api/classes ──────────────────────────────────────────────────────
+const JOIN_CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+function generateJoinCode(): string {
+  return Array.from({ length: 6 }, () =>
+    JOIN_CODE_CHARS[Math.floor(Math.random() * JOIN_CODE_CHARS.length)]
+  ).join('')
+}
+
+app.post('/api/classes', requireAuth, requireRole('INSTRUCTOR'), async (req: Request, res: Response) => {
+  const { name } = req.body
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    res.status(400).json({ error: 'name is required.' })
+    return
+  }
+
+  // Retry on join-code collision (unique constraint on classes.joinCode)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const joinCode = generateJoinCode()
+    try {
+      const created = await prisma.class.create({
+        data: { name: name.trim(), joinCode, instructorId: req.user!.userId },
+      })
+      console.log(`[CLASS] Created "${created.name}" joinCode=${created.joinCode}`)
+      res.status(201).json(created)
+      return
+    } catch (err) {
+      const isUniqueViolation = err instanceof Error && 'code' in err && (err as { code?: string }).code === 'P2002'
+      if (!isUniqueViolation) throw err
+    }
+  }
+  res.status(500).json({ error: 'Could not generate a unique join code — try again.' })
+})
+
+// ── GET /api/classes ───────────────────────────────────────────────────────
+app.get('/api/classes', requireAuth, async (req: Request, res: Response) => {
+  const { userId, role } = req.user!
+  const classes = role === 'INSTRUCTOR'
+    ? await prisma.class.findMany({ where: { instructorId: userId } })
+    : await prisma.class.findMany({ where: { memberships: { some: { userId } } } })
+  res.json(classes)
+})
+
+// ── POST /api/classes/join ─────────────────────────────────────────────────
+app.post('/api/classes/join', requireAuth, requireRole('STUDENT'), async (req: Request, res: Response) => {
+  const { joinCode } = req.body
+  if (typeof joinCode !== 'string' || joinCode.trim().length === 0) {
+    res.status(400).json({ error: 'joinCode is required.' })
+    return
+  }
+
+  const klass = await prisma.class.findUnique({ where: { joinCode: joinCode.trim().toUpperCase() } })
+  if (!klass) {
+    res.status(404).json({ error: 'No class found for that join code.' })
+    return
+  }
+
+  const userId = req.user!.userId
+  const existing = await prisma.classMembership.findUnique({
+    where: { userId_classId: { userId, classId: klass.id } },
+  })
+  if (existing) {
+    res.status(409).json({ error: 'Already a member of this class.' })
+    return
+  }
+
+  await prisma.classMembership.create({ data: { userId, classId: klass.id } })
+  console.log(`[CLASS] Student ${userId} joined "${klass.name}"`)
+  res.status(201).json(klass)
+})
+
+// Shared guard: is this user the instructor of, or a member of, this class?
+async function canAccessClass(userId: string, classId: string): Promise<boolean> {
+  const klass = await prisma.class.findUnique({ where: { id: classId } })
+  if (!klass) return false
+  if (klass.instructorId === userId) return true
+  const membership = await prisma.classMembership.findUnique({
+    where: { userId_classId: { userId, classId } },
+  })
+  return membership !== null
+}
+
+// ── GET /api/classes/:id ───────────────────────────────────────────────────
+app.get('/api/classes/:id', requireAuth, async (req: Request, res: Response) => {
+  const classId = String(req.params.id)
+  const klass = await prisma.class.findUnique({
+    where: { id: classId },
+    include: { assignments: true },
+  })
+  if (!klass) {
+    res.status(404).json({ error: 'Class not found.' })
+    return
+  }
+  if (!(await canAccessClass(req.user!.userId, classId))) {
+    res.status(403).json({ error: 'Not the instructor or a member of this class.' })
+    return
+  }
+  res.json(klass)
+})
+
+// ── POST /api/classes/:classId/assignments ─────────────────────────────────
+// multipart/form-data: title, type, week, syllabus? (PDF file).
+// multer creates uploads/ automatically when destination is a string.
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: 'uploads/',
+    filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
+  }),
+})
+
+app.post(
+  '/api/classes/:classId/assignments',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  upload.single('syllabus'),
+  async (req: Request, res: Response) => {
+    const classId = String(req.params.classId)
+    const { title, type } = req.body
+    const week = Number.parseInt(req.body.week, 10)
+
+    if (typeof title !== 'string' || title.trim().length === 0) {
+      res.status(400).json({ error: 'title is required.' })
+      return
+    }
+    if (type !== 'LIVE_LAB' && type !== 'ASSESSMENT') {
+      res.status(400).json({ error: "type must be 'LIVE_LAB' or 'ASSESSMENT'." })
+      return
+    }
+
+    const klass = await prisma.class.findUnique({ where: { id: classId } })
+    if (!klass) {
+      res.status(404).json({ error: 'Class not found.' })
+      return
+    }
+    if (klass.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+
+    // allowlist stays null for now — the Gemini syllabus parser fills it in Phase 6.
+    const assignment = await prisma.assignment.create({
+      data: {
+        classId,
+        title: title.trim(),
+        type,
+        week: Number.isFinite(week) && week > 0 ? week : 1,
+        pdfFilename: req.file?.filename ?? null,
+      },
+    })
+    console.log(`[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week}) in class ${classId}`)
+    res.status(201).json(assignment)
+  }
+)
+
+// ── GET /api/classes/:classId/assignments ──────────────────────────────────
+app.get('/api/classes/:classId/assignments', requireAuth, async (req: Request, res: Response) => {
+  const classId = String(req.params.classId)
+  if (!(await canAccessClass(req.user!.userId, classId))) {
+    res.status(403).json({ error: 'Not the instructor or a member of this class.' })
+    return
+  }
+  const assignments = await prisma.assignment.findMany({ where: { classId } })
+  res.json(assignments)
+})
+
+// ── GET /api/assignments/:id ───────────────────────────────────────────────
+// Called by the student IDE on load to get week/type/allowlist.
+app.get('/api/assignments/:id', requireAuth, async (req: Request, res: Response) => {
+  const assignment = await prisma.assignment.findUnique({
+    where: { id: String(req.params.id) },
+    include: { class: true },
+  })
+  if (!assignment) {
+    res.status(404).json({ error: 'Assignment not found.' })
+    return
+  }
+  res.json(assignment)
 })
 
 // ── Socket.io setup ───────────────────────────────────────────────────────

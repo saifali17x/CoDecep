@@ -21,6 +21,7 @@ export default function EditorPane({
   studentId,
   sessionIdRef,
   labMode,
+  assignmentId,
 }) {
   const lastKeystrokeTime = useRef(Date.now());
   const prevCode = useRef(code);
@@ -91,7 +92,7 @@ export default function EditorPane({
         const res = await fetch("http://localhost:3001/api/ast/validate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: codeAtKeystroke }),
+          body: JSON.stringify({ code: codeAtKeystroke, ...(assignmentId ? { assignmentId } : {}) }),
         });
         const { isValid, violations } = await res.json();
         if (!isValid && violations.length > 0) {

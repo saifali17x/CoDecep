@@ -22,7 +22,18 @@ int main() {
 
 const STUDENT_ID = "student-001";
 
-function App() {
+function App({
+  sessionId: sessionIdProp,
+  userId,
+  assignmentId,
+  labMode: labModeProp,
+  studentId: studentIdProp,
+} = {}) {
+  // Effective values: props (real identity from ExamPage) fall back to the
+  // hardcoded module consts so the propless /legacy dev flow is unchanged.
+  const LAB_MODE_EFFECTIVE = labModeProp ?? LAB_MODE;
+  const STUDENT_ID_EFFECTIVE = studentIdProp ?? STUDENT_ID;
+
   const [code, setCode] = useState(DEFAULT_CODE);
   const [language, setLanguage] = useState("cpp");
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
@@ -64,10 +75,10 @@ function App() {
           focusStartRef.current = null;
         }
         // Tier 1 alert — TAB_OUT (only in LIVE_LAB, never after Submit)
-        if (LAB_MODE === "LIVE_LAB") {
+        if (LAB_MODE_EFFECTIVE === "LIVE_LAB") {
           const payload = {
             type: "TAB_OUT",
-            studentId: STUDENT_ID,
+            studentId: STUDENT_ID_EFFECTIVE,
             sessionId: sessionIdRef.current,
             timestamp: Date.now(),
             detail: "tab lost focus",
@@ -85,12 +96,20 @@ function App() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, []);
 
-  // Create (or resume) the session on mount
+  // Create (or resume) the session on mount.
+  // If a sessionId prop is supplied (ExamPage already created the session with
+  // real identity), use it directly and do NOT hit /api/session/create.
+  // Otherwise keep the exact legacy behavior (self-create for student-001).
   useEffect(() => {
+    if (sessionIdProp) {
+      setSessionId(sessionIdProp);
+      sessionIdRef.current = sessionIdProp;
+      return;
+    }
     fetch("http://localhost:3001/api/session/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ studentId: STUDENT_ID }),
+      body: JSON.stringify({ studentId: STUDENT_ID_EFFECTIVE }),
     })
       .then((r) => r.json())
       .then((data) => {
@@ -144,7 +163,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sessionId: currentSessionId,
-          studentId: STUDENT_ID,
+          studentId: STUDENT_ID_EFFECTIVE,
           chunk,
           codeSnapshot: currentCode,
           engagedTimeMs,
@@ -228,9 +247,10 @@ function App() {
             onCursorChange={(line, col) => setCursor({ line, col })}
             onFlush={handleFlush}
             isSubmitted={sessionStatus === "SUBMITTED"}
-            studentId={STUDENT_ID}
+            studentId={STUDENT_ID_EFFECTIVE}
             sessionIdRef={sessionIdRef}
-            labMode={LAB_MODE}
+            labMode={LAB_MODE_EFFECTIVE}
+            assignmentId={assignmentId}
           />
           <Terminal lines={terminalLines} />
         </div>

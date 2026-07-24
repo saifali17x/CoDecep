@@ -1,0 +1,213 @@
+/* Shared dark theme for auth + portal + class pages.
+   Palette matches the IDE/Dashboard (GitHub-dark). */
+
+.portal {
+  min-height: 100vh;
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  box-sizing: border-box;
+}
+
+/* ── Centered auth card (login / register) ───────────────────────────────── */
+.auth-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d1117;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 360px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 28px 24px;
+}
+
+.auth-title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  color: #e6edf3;
+}
+.auth-sub {
+  margin: 0 0 20px;
+  font-size: 12px;
+  color: #6e7681;
+}
+
+/* ── Forms ───────────────────────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.field label {
+  font-size: 12px;
+  color: #8b949e;
+}
+.field input,
+.field select {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  color: #e6edf3;
+  padding: 9px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.field input:focus,
+.field select:focus {
+  border-color: #388bfd;
+}
+
+.btn {
+  background: #238636;
+  border: 1px solid rgba(240, 246, 252, 0.1);
+  color: #fff;
+  padding: 9px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.btn:hover { background: #2ea043; }
+.btn:disabled { opacity: 0.55; cursor: default; }
+
+.btn-secondary {
+  background: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+}
+.btn-secondary:hover { background: #30363d; }
+
+.btn-block { width: 100%; }
+
+.form-error {
+  color: #f85149;
+  font-size: 12px;
+  margin: 4px 0 12px;
+  min-height: 14px;
+}
+
+.auth-alt {
+  margin-top: 16px;
+  font-size: 12px;
+  color: #6e7681;
+  text-align: center;
+}
+.auth-alt a { color: #79c0ff; text-decoration: none; }
+.auth-alt a:hover { text-decoration: underline; }
+
+/* ── Portal / class header ───────────────────────────────────────────────── */
+.portal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #30363d;
+  padding: 14px 24px;
+}
+.portal-brand { font-size: 14px; font-weight: 600; color: #c9d1d9; }
+.portal-user { font-size: 12px; color: #8b949e; display: flex; align-items: center; gap: 14px; }
+.portal-user .role-pill {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #79c0ff;
+}
+
+.portal-body { padding: 24px; max-width: 900px; margin: 0 auto; }
+
+.section { margin-bottom: 28px; }
+.section h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8b949e;
+  margin: 0 0 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Inline create/join form row */
+.inline-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.inline-form .field { margin-bottom: 0; }
+
+/* ── Cards / lists ───────────────────────────────────────────────────────── */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+
+.card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.card-title { font-size: 14px; color: #e6edf3; font-weight: 600; }
+.card-meta { font-size: 11px; color: #6e7681; }
+
+.join-code {
+  font-size: 12px;
+  color: #79c0ff;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 5px;
+  padding: 3px 8px;
+  display: inline-block;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  user-select: all;
+}
+
+.empty-note { color: #6e7681; font-size: 12px; }
+
+/* Assignment table */
+.assign-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.assign-table th {
+  text-align: left; color: #6e7681; font-weight: 400;
+  padding: 6px 10px; border-bottom: 1px solid #21262d;
+}
+.assign-table td { padding: 8px 10px; border-bottom: 1px solid #161b22; }
+.type-pill {
+  font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  border: 1px solid #30363d;
+}
+.type-pill.LIVE_LAB { color: #f59e0b; }
+.type-pill.ASSESSMENT { color: #79c0ff; }
+
+/* Exam page top strip */
+.exam-strip {
+  display: flex; align-items: center; gap: 16px;
+  background: #161b22; border-bottom: 1px solid #30363d;
+  padding: 8px 14px; color: #e6edf3; font-size: 13px;
+  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+}
+.exam-strip .exam-title { font-weight: 600; }
+.exam-loading {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: #0d1117; color: #8b949e;
+  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+}
+
+/* Dashboard assignment filter banner */
+.dash-filter {
+  background: #161b22; border-bottom: 1px solid #30363d;
+  color: #79c0ff; font-size: 12px; padding: 8px 16px;
+  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+}
+
+.link-btn {
+  background: none; border: none; color: #79c0ff; cursor: pointer;
+  font-family: inherit; font-size: 13px; padding: 0;
+}
+.link-btn:hover { text-decoration: underline; }

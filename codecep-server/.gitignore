@@ -17,3 +17,6 @@ logs/
 
 # OS
 .DS_Store
+
+# Uploaded syllabus PDFs (multer)
+uploads/
