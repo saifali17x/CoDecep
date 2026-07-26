@@ -178,6 +178,36 @@ app.post('/api/session/:id/submit', async (req: Request, res: Response) => {
   }
 })
 
+// ── GET /api/session/:id/playback ─────────────────────────────────────────
+// DVR playback reader (Phase 4.2/4.3). Pure reader of existing JSONB — returns
+// one codeSnapshot + metadata per 30s flush, never the raw events arrays.
+// TODO: requireAuth + requireRole('INSTRUCTOR') — unprotected in dev to match
+// the tokenless /dashboard flow; lock down in the hardening pass.
+app.get('/api/session/:id/playback', async (req: Request, res: Response) => {
+  const sessionId = String(req.params.id)
+
+  const session = await prisma.session.findUnique({ where: { id: sessionId } })
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' })
+    return
+  }
+
+  const playbackLog = Array.isArray(session.playback_log) ? session.playback_log : []
+
+  res.status(200).json({
+    sessionId: session.id,
+    studentId: session.studentId,
+    status: session.status,
+    snapshotCount: playbackLog.length,
+    forensicsResults: session.forensicsResults, // null until submitted + worker runs
+    snapshots: playbackLog.map((entry: any) => ({
+      flushedAt: entry.flushedAt,
+      codeSnapshot: entry.codeSnapshot,
+      eventCount: entry.events?.length ?? 0,
+    })),
+  })
+})
+
 // ── POST /api/ast/validate ─────────────────────────────────────────────────
 // Baseline C++ node types every minimal valid program contains. Control-flow
 // constructs (for_statement / while_statement / do_statement) are deliberately
