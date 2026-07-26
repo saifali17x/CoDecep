@@ -179,19 +179,46 @@ app.post('/api/session/:id/submit', async (req: Request, res: Response) => {
 })
 
 // ── POST /api/ast/validate ─────────────────────────────────────────────────
+// Baseline C++ node types every minimal valid program contains. Control-flow
+// constructs (for_statement / while_statement / do_statement) are deliberately
+// ABSENT — they must still flag. ERROR/MISSING are not listed: the walker in
+// ast/parser.ts drops them so mid-typing parse states never raise violations.
 const week1Allowlist = [
+  // Structural / translation unit
   'translation_unit',
+  'preproc_include',      // #include
+  'preproc_arg',
+  'system_lib_string',    // <iostream>
+  'string_literal',       // "..."
+  'string_content',       // text inside a string_literal
+  'escape_sequence',      // "\n" inside a string_literal
+  'using_declaration',    // using namespace std;
+  'namespace_identifier',
+  'qualified_identifier', // std::cout
+
+  // Function structure
   'function_definition',
-  'function_declarator', // structural sub-node of every function_definition
-  'parameter_list',      // structural sub-node of every function_definition
-  'compound_statement',
+  'function_declarator',
+  'primitive_type',       // int, void, char, ...
+  'type_identifier',      // string, and other non-primitive type names
+  'compound_statement',   // { ... }
+  'parameter_list',
+
+  // Basic statements & expressions (cout / cin / return / assignment)
+  'declaration',
+  'init_declarator',
   'expression_statement',
   'return_statement',
-  'primitive_type',
   'identifier',
   'number_literal',
-  'string_literal',
-  'ERROR',
+  'char_literal',
+  'character',            // the char inside a char_literal
+  'binary_expression',    // << chaining and arithmetic
+  'assignment_expression',
+  'call_expression',
+  'argument_list',
+  'field_expression',
+  'field_identifier',     // the member name in a field_expression
 ]
 
 app.post('/api/ast/validate', async (req: Request, res: Response) => {

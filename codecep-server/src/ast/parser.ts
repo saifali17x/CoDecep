@@ -26,6 +26,14 @@ export async function validateAST(
   const violations: Violation[] = []
 
   function walk(node: Parser.SyntaxNode) {
+    // The route is called on a debounce WHILE the student is still typing, so the
+    // parser regularly sees incomplete C++ (e.g. `cout <`). Tree-sitter represents
+    // those transient states as ERROR / MISSING nodes. They are not "allowed"
+    // constructs — they are "ignore while typing", so drop the whole subtree.
+    if (node.type === 'ERROR' || node.isMissing) {
+      return
+    }
+
     // Skip anonymous tokens (punctuation, operators like '{', ';', '(')
     if (node.isNamed && !allowlist.includes(node.type)) {
       violations.push({
