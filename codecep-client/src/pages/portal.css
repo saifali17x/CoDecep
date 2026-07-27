@@ -211,3 +211,41 @@
   font-family: inherit; font-size: 13px; padding: 0;
 }
 .link-btn:hover { text-decoration: underline; }
+
+/* ── Syllabus allowlist preview (Phase 6) ────────────────────────────────── */
+.allowlist-warning {
+  color: #f59e0b; font-size: 12px; margin: 12px 0 0;
+}
+.allowlist-preview {
+  margin-top: 16px;
+  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  padding: 14px;
+}
+.allowlist-note { color: #f59e0b; font-size: 12px; margin: 0 0 12px; }
+.allowlist-week { margin-bottom: 8px; }
+.allowlist-week summary {
+  cursor: pointer; font-size: 13px; color: #e6edf3; font-weight: 600;
+  padding: 4px 0; user-select: none;
+}
+.allowlist-count { color: #6e7681; font-weight: 400; font-size: 11px; }
+.chip-list {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 4px 14px;
+  align-items: center;
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: #0d1117; border: 1px solid #30363d; border-radius: 12px;
+  padding: 2px 8px; font-size: 11px; color: #c9d1d9;
+}
+.chip-x {
+  background: none; border: none; color: #6e7681; cursor: pointer;
+  font-size: 13px; padding: 0; line-height: 1; font-family: inherit;
+}
+.chip-x:hover { color: #f85149; }
+.chip-add { display: inline-flex; align-items: center; gap: 6px; }
+.chip-add input {
+  background: #0d1117; border: 1px solid #30363d; border-radius: 12px;
+  color: #e6edf3; padding: 2px 8px; font-size: 11px; font-family: inherit;
+  width: 130px; outline: none;
+}
+.chip-add input:focus { border-color: #388bfd; }

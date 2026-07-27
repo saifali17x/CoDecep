@@ -9,9 +9,11 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
 import bcrypt from 'bcryptjs'
 import multer from 'multer'
+import { PDFParse } from 'pdf-parse'
 import { validateAST } from './ast/parser'
 import { computeMetricA, computeLinearInjection, computeRoboticVariance } from './forensics/metrics'
 import { signToken, requireAuth, requireRole } from './auth'
+import { parseSyllabusToAllowlist } from './gemini'
 
 dotenv.config()
 
@@ -251,16 +253,67 @@ const week1Allowlist = [
   'field_identifier',     // the member name in a field_expression
 ]
 
+// Given an assignment's { weeks: {...} } allowlist, pick the list for its week.
+// Falls back to the highest available week <= the assignment's week, else null
+// (caller then uses the hardcoded week1Allowlist).
+function resolveAssignmentAllowlist(
+  allowlist: unknown,
+  assignmentWeek: number,
+): string[] | null {
+  const weeks = (allowlist as { weeks?: Record<string, unknown> } | null)?.weeks
+  if (!weeks || typeof weeks !== 'object') return null
+
+  const exact = weeks[`week${assignmentWeek}`]
+  if (Array.isArray(exact) && exact.every((x) => typeof x === 'string')) {
+    return exact as string[]
+  }
+
+  let bestWeek = -1
+  let bestList: string[] | null = null
+  for (const [key, list] of Object.entries(weeks)) {
+    const match = /^week(\d+)$/.exec(key)
+    if (!match) continue
+    const n = Number(match[1])
+    if (n <= assignmentWeek && n > bestWeek &&
+        Array.isArray(list) && list.every((x) => typeof x === 'string')) {
+      bestWeek = n
+      bestList = list as string[]
+    }
+  }
+  return bestList
+}
+
 app.post('/api/ast/validate', async (req: Request, res: Response) => {
-  const { code } = req.body
+  const { code, assignmentId } = req.body
 
   if (typeof code !== 'string' || code.trim().length === 0) {
     res.status(400).json({ error: 'Request body must contain a non-empty "code" string.' })
     return
   }
 
-  const result = await validateAST(code, week1Allowlist)
-  console.log(`[AST] Validated ${result.violations.length} violation(s) — isValid: ${result.isValid}`)
+  // Per-assignment allowlist (Phase 6). Falls back to the hardcoded
+  // week1Allowlist when there is no assignment / no stored allowlist — keeps
+  // the /legacy dev flow byte-for-byte compatible. Failures here must never
+  // break validation, so lookup errors degrade to the default list.
+  let allowlist = week1Allowlist
+  let allowlistSource = 'default'
+  if (typeof assignmentId === 'string' && assignmentId.length > 0) {
+    try {
+      const assignment = await prisma.assignment.findUnique({ where: { id: assignmentId } })
+      if (assignment?.allowlist) {
+        const resolved = resolveAssignmentAllowlist(assignment.allowlist, assignment.week)
+        if (resolved) {
+          allowlist = resolved
+          allowlistSource = `assignment week${assignment.week}`
+        }
+      }
+    } catch (err) {
+      console.error('[AST] Allowlist lookup failed — using default:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  const result = await validateAST(code, allowlist)
+  console.log(`[AST] Validated ${result.violations.length} violation(s) — isValid: ${result.isValid} (allowlist: ${allowlistSource})`)
   res.status(200).json(result)
 })
 
@@ -480,8 +533,59 @@ app.get('/api/classes/:id', requireAuth, async (req: Request, res: Response) => 
   res.json(klass)
 })
 
+// ── POST /api/assignments/preview-allowlist ────────────────────────────────
+// Phase 6 preview step: parse a syllabus PDF into a per-week allowlist WITHOUT
+// saving anything. The instructor reviews/edits the result in the UI, then the
+// confirmed version is sent with the normal create-assignment request. Memory
+// storage — we only need the text here, the file itself is uploaded on create.
+const previewUpload = multer({ storage: multer.memoryStorage() })
+
+app.post(
+  '/api/assignments/preview-allowlist',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  previewUpload.single('syllabus'),
+  async (req: Request, res: Response) => {
+    if (!req.file?.buffer) {
+      res.status(400).json({ error: "A PDF file field named 'syllabus' is required." })
+      return
+    }
+
+    let text = ''
+    try {
+      const parser = new PDFParse({ data: new Uint8Array(req.file.buffer) })
+      try {
+        const parsed = await parser.getText()
+        text = parsed.text?.trim() ?? ''
+      } finally {
+        await parser.destroy()
+      }
+    } catch (err) {
+      console.error('[GEMINI] pdf-parse failed:', err instanceof Error ? err.message : err)
+    }
+    if (text.length < 50) {
+      res.status(400).json({ error: 'Could not extract text from PDF (is it a scanned image?)' })
+      return
+    }
+
+    try {
+      const result = await parseSyllabusToAllowlist(text)
+      console.log(`[GEMINI] preview parsed ${Object.keys(result.weeks).length} weeks for instructor ${req.user!.userId}`)
+      res.status(200).json({ weeks: result.weeks })
+    } catch {
+      // Gemini failure must not block assignment creation — the UI shows the
+      // warning and lets the instructor proceed on the default allowlist.
+      res.status(200).json({
+        weeks: null,
+        warning: 'Gemini could not parse this syllabus. You can proceed without it and the default allowlist will be used, or edit manually.',
+      })
+    }
+  }
+)
+
 // ── POST /api/classes/:classId/assignments ─────────────────────────────────
-// multipart/form-data: title, type, week, syllabus? (PDF file).
+// multipart/form-data: title, type, week, syllabus? (PDF file), allowlist?
+// (JSON string of the instructor-confirmed { weeks: {...} } from the preview).
 // multer creates uploads/ automatically when destination is a string.
 const upload = multer({
   storage: multer.diskStorage({
@@ -519,7 +623,21 @@ app.post(
       return
     }
 
-    // allowlist stays null for now — the Gemini syllabus parser fills it in Phase 6.
+    // Instructor-confirmed allowlist from the preview step (Phase 6). Gemini is
+    // NOT re-run here — this route only persists what the instructor approved.
+    // Absent or malformed → null → AST validation falls back to week1Allowlist.
+    let allowlist: { weeks: Record<string, string[]> } | null = null
+    if (typeof req.body.allowlist === 'string' && req.body.allowlist.length > 0) {
+      try {
+        const parsed = JSON.parse(req.body.allowlist)
+        if (parsed && typeof parsed === 'object' && parsed.weeks && typeof parsed.weeks === 'object') {
+          allowlist = parsed
+        }
+      } catch {
+        console.error('[ASSIGNMENT] Ignoring malformed allowlist JSON — storing null')
+      }
+    }
+
     const assignment = await prisma.assignment.create({
       data: {
         classId,
@@ -527,6 +645,7 @@ app.post(
         type,
         week: Number.isFinite(week) && week > 0 ? week : 1,
         pdfFilename: req.file?.filename ?? null,
+        ...(allowlist ? { allowlist } : {}),
       },
     })
     console.log(`[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week}) in class ${classId}`)
