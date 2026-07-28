@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import App from "../App";
+import PdfPane from "../components/PdfPane";
 import "./portal.css";
 
 // Wraps the IDE (App) with a real authenticated identity + the assignment's
@@ -56,20 +57,34 @@ export default function ExamPage() {
     return <div className="exam-loading">Loading exam…</div>;
   }
 
+  // The IDE render is identical in both layouts — the PDF split only WRAPS it.
+  const ide = (
+    <App
+      sessionId={sessionId}
+      userId={user.id}
+      assignmentId={assignmentId}
+      labMode={assignment.type}
+      studentId={user.username}
+    />
+  );
+
   return (
-    <div>
+    <div className={assignment.pdfFilename ? "exam-layout" : undefined}>
       <div className="exam-strip">
         <button className="btn btn-secondary" onClick={() => navigate(-1)}>← Back to Class</button>
         <span className="exam-title">{assignment.title}</span>
         <span className={`type-pill ${assignment.type}`}>{assignment.type}</span>
       </div>
-      <App
-        sessionId={sessionId}
-        userId={user.id}
-        assignmentId={assignmentId}
-        labMode={assignment.type}
-        studentId={user.username}
-      />
+      {assignment.pdfFilename ? (
+        <div className="exam-split">
+          <div className="exam-split-left">
+            <PdfPane assignmentId={assignmentId} />
+          </div>
+          <div className="exam-split-right">{ide}</div>
+        </div>
+      ) : (
+        ide
+      )}
     </div>
   );
 }

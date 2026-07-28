@@ -1,6 +1,8 @@
 import express, { Request, Response } from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import fs from 'fs'
+import path from 'path'
 import { createServer } from 'http'
 import { Server as SocketServer } from 'socket.io'
 import { Queue, Worker } from 'bullmq'
@@ -676,6 +678,39 @@ app.get('/api/assignments/:id', requireAuth, async (req: Request, res: Response)
     return
   }
   res.json(assignment)
+})
+
+// ── GET /api/assignments/:id/pdf ───────────────────────────────────────────
+// Streams the assignment's uploaded PDF for the exam split-pane (Phase 1).
+// Path-traversal guard: only ever uploads/ + basename of the STORED filename —
+// no user-supplied path segment is ever joined.
+app.get('/api/assignments/:id/pdf', requireAuth, async (req: Request, res: Response) => {
+  const assignment = await prisma.assignment.findUnique({
+    where: { id: String(req.params.id) },
+  })
+  if (!assignment) {
+    res.status(404).json({ error: 'Assignment not found.' })
+    return
+  }
+  if (!assignment.pdfFilename) {
+    res.status(404).json({ error: 'No PDF for this assignment' })
+    return
+  }
+
+  const safeName = path.basename(assignment.pdfFilename)
+  const filePath = path.join(process.cwd(), 'uploads', safeName)
+  if (!fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'PDF file missing from storage.' })
+    return
+  }
+
+  res.setHeader('Content-Type', 'application/pdf')
+  fs.createReadStream(filePath)
+    .on('error', () => {
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to read PDF.' })
+      else res.end()
+    })
+    .pipe(res)
 })
 
 // ── Socket.io setup ───────────────────────────────────────────────────────

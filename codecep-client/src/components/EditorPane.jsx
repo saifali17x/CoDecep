@@ -4,11 +4,18 @@ import socket from "../socket";
 import "./EditorPane.css";
 
 const PASTE_THRESHOLD = 50; // charDelta > 50 triggers ILLEGAL_PASTE (per CLAUDE.md)
+const CONTENT_HISTORY_LIMIT = 50; // bounded rolling history of session content
 
 function classifyAction(delta) {
   if (delta < 0) return "delete";
   if (delta > 4) return "paste";
   return "type";
+}
+
+// Whitespace-insensitive comparison so trivial formatting differences don't
+// misclassify an internal re-paste as external.
+function normalizeContent(text) {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 export default function EditorPane({
@@ -27,6 +34,27 @@ export default function EditorPane({
   const prevCode = useRef(code);
   const telemetryBuffer = useRef([]);
 
+  // Paste provenance (internal vs external) — session-local content history.
+  // We compare pasted text against what THIS session has already contained;
+  // we never try to read the OS clipboard's origin.
+  const lastPastedTextRef = useRef(null); // set by Monaco onDidPaste, consumed once
+  const sessionContentRef = useRef([]); // normalized full-content snapshots
+
+  function pushSessionContent(text) {
+    const norm = normalizeContent(text);
+    if (!norm) return;
+    const hist = sessionContentRef.current;
+    if (hist[hist.length - 1] === norm) return;
+    hist.push(norm);
+    if (hist.length > CONTENT_HISTORY_LIMIT) hist.shift();
+  }
+
+  function isInternalPaste(pastedText) {
+    const needle = normalizeContent(pastedText);
+    if (!needle) return true; // whitespace-only pastes contain nothing novel
+    return sessionContentRef.current.some((chunk) => chunk.includes(needle));
+  }
+
   // AST_VIOLATION debounce state
   const debounceTimer = useRef(null);
   const lastViolationSig = useRef(null); // "nodeType:line" — prevents alert spam
@@ -44,6 +72,9 @@ export default function EditorPane({
   useEffect(() => {
     if (isSubmitted) return;
     const id = setInterval(() => {
+      // Bank the current content into the session history each flush cycle so
+      // later re-pastes of it classify as internal.
+      pushSessionContent(prevCode.current);
       if (telemetryBuffer.current.length === 0) return;
       const payloadToFlush = [...telemetryBuffer.current];
       telemetryBuffer.current = [];
@@ -58,29 +89,54 @@ export default function EditorPane({
     const timeSinceLastKeystrokeMs = now - lastKeystrokeTime.current;
     lastKeystrokeTime.current = now;
 
-    const charDelta = next.length - prevCode.current.length;
+    const contentBeforeChange = prevCode.current;
+    const charDelta = next.length - contentBeforeChange.length;
     const actionType = classifyAction(charDelta);
     prevCode.current = next;
 
-    telemetryBuffer.current.push({
+    const event = {
       timestamp: now,
       timeSinceLastKeystrokeMs,
       actionType,
       charDelta,
       textLength: next.length,
-    });
+    };
+    telemetryBuffer.current.push(event);
 
-    // Tier 1 alert — ILLEGAL_PASTE (both modes; guard against Submit)
+    // Tier 1 alert — ILLEGAL_PASTE (both modes; guard against Submit).
+    // Provenance-aware: an INTERNAL paste (text the session already contained)
+    // is recorded in telemetry but never alerts; only EXTERNAL (novel) pastes
+    // fire. Provenance can only SUPPRESS a would-be alert, never add one.
     if (!isSubmitted && actionType === "paste" && charDelta > PASTE_THRESHOLD) {
-      const payload = {
-        type: "ILLEGAL_PASTE",
-        studentId,
-        sessionId: sessionIdRef?.current ?? null,
-        timestamp: now,
-        detail: `charDelta: +${charDelta}`,
-      };
-      console.log("[EMIT] ILLEGAL_PASTE", payload);
-      socket.emit("alert", payload);
+      // The pre-paste content is legitimate session history — bank it now so
+      // re-pasting something typed earlier is recognized as internal.
+      pushSessionContent(contentBeforeChange);
+      // Monaco fires the content-change event (this handler) BEFORE onDidPaste,
+      // so defer one tick to let onDidPaste record the pasted text first.
+      setTimeout(() => {
+        if (isSubmittedRef.current) return; // Immune Phase still wins
+        const pastedText = lastPastedTextRef.current;
+        lastPastedTextRef.current = null; // consume once
+        // No paste-event text (drag-drop, programmatic insert) → treat as
+        // external — the safer default, identical to the old behavior.
+        const provenance =
+          pastedText !== null && isInternalPaste(pastedText) ? "internal" : "external";
+        event.provenance = provenance; // tagged in telemetry either way
+
+        if (provenance === "internal") {
+          console.log(`[PASTE] internal paste (+${charDelta} chars) — no alert`);
+          return;
+        }
+        const payload = {
+          type: "ILLEGAL_PASTE",
+          studentId,
+          sessionId: sessionIdRef?.current ?? null,
+          timestamp: now,
+          detail: `external paste, +${charDelta} chars`,
+        };
+        console.log("[EMIT] ILLEGAL_PASTE", payload);
+        socket.emit("alert", payload);
+      }, 0);
     }
 
     // Tier 1 alert — AST_VIOLATION (debounced 1.5s, de-duplicated, Immune Phase guarded)
@@ -124,6 +180,12 @@ export default function EditorPane({
   function handleMount(editor) {
     editor.onDidChangeCursorPosition((e) => {
       onCursorChange(e.position.lineNumber, e.position.column);
+    });
+    // Capture the actual pasted text (not just its size) for provenance
+    // classification. e.range is the range of the freshly-inserted text.
+    editor.onDidPaste((e) => {
+      const model = editor.getModel();
+      if (model) lastPastedTextRef.current = model.getValueInRange(e.range);
     });
   }
 
