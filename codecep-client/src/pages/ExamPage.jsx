@@ -16,14 +16,25 @@ export default function ExamPage() {
 
   const [assignment, setAssignment] = useState(null);
   const [sessionId, setSessionId] = useState(null);
+  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        // 1. Load the assignment (gives us type = lab mode, title, week).
+        // 1. Load the assignment (gives us type = lab mode, title, week, and
+        //    whether THIS student already submitted it).
         const a = await apiFetch(`/api/assignments/${assignmentId}`, { token });
+        if (a.mySubmittedSession) {
+          // Session 16: already submitted — do NOT create a fresh session.
+          // Reuse the submitted session id and open the IDE locked.
+          if (cancelled) return;
+          setAssignment(a);
+          setSessionId(a.mySubmittedSession.id);
+          setAlreadySubmitted(true);
+          return;
+        }
         // 2. Create a session tied to this student + assignment.
         const { sessionId: sid } = await apiFetch("/api/session/create", {
           method: "POST",
@@ -65,6 +76,7 @@ export default function ExamPage() {
       assignmentId={assignmentId}
       labMode={assignment.type}
       studentId={user.username}
+      initialStatus={alreadySubmitted ? "SUBMITTED" : undefined}
     />
   );
 

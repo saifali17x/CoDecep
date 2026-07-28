@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
-import { Link, useParams, useNavigate } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
+import AppShell from "../components/AppShell";
+import DvrPlayer from "../components/DvrPlayer";
 import "./portal.css";
 
 function fmtDate(iso) {
@@ -13,13 +15,35 @@ function fmtDate(iso) {
   }
 }
 
+function fmtTime(iso) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return "—";
+  }
+}
+
+// Probabilistic framing: a flag means "flagged for instructor review" — never
+// an accusation. Pending forensics (not yet submitted) shows a neutral dash.
+function FlagPill({ metric }) {
+  const flag = metric?.flag;
+  if (flag === true) {
+    return <span className="flag-pill flagged" title="Flagged for instructor review">⚠</span>;
+  }
+  if (flag === false) {
+    return <span className="flag-pill clear" title="No flag">✓</span>;
+  }
+  return <span className="flag-pill pending" title="Forensics pending">—</span>;
+}
+
 export default function ClassPage() {
   const { classId } = useParams();
   const { token, user } = useAuth();
-  const navigate = useNavigate();
 
   const [klass, setKlass] = useState(null);
   const [assignments, setAssignments] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   // Instructor create-assignment form
@@ -35,16 +59,28 @@ export default function ClassPage() {
   const [parsing, setParsing] = useState(false);
   const [newNodeByWeek, setNewNodeByWeek] = useState({}); // { week1: "typed text", ... }
 
+  // Session 16 — instructor session discovery + inline DVR replay
+  const [sessionsFor, setSessionsFor] = useState(null); // assignmentId | null
+  const [sessions, setSessions] = useState(null);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionsError, setSessionsError] = useState("");
+  const [replaySessionId, setReplaySessionId] = useState(null);
+
   const isInstructor = klass ? klass.instructorId === user?.id : false;
 
   const load = useCallback(async () => {
+    setError("");
+    setLoading(true);
     try {
-      // GET /api/classes/:id returns the class WITH its assignments (Prisma include).
+      // GET /api/classes/:id returns the class WITH its assignments (Prisma
+      // include) and, for the requester, mySubmissions (assignment ids).
       const data = await apiFetch(`/api/classes/${classId}`, { token });
       setKlass(data);
       setAssignments(data?.assignments ?? []);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   }, [classId, token]);
 
@@ -132,22 +168,66 @@ export default function ClassPage() {
     }
   }
 
-  return (
-    <div className="portal">
-      <div className="portal-header">
-        <span className="portal-brand">CoDecep</span>
-        <span className="portal-user">
-          <button className="btn btn-secondary" onClick={() => navigate("/portal")}>← Portal</button>
-        </span>
-      </div>
+  const loadSessions = useCallback(
+    async (assignmentId) => {
+      setSessionsError("");
+      setSessionsLoading(true);
+      try {
+        const list = await apiFetch(`/api/assignments/${assignmentId}/sessions`, { token });
+        setSessions(list ?? []);
+      } catch (err) {
+        setSessionsError(err.message);
+      } finally {
+        setSessionsLoading(false);
+      }
+    },
+    [token]
+  );
 
+  function toggleSessions(assignmentId) {
+    if (sessionsFor === assignmentId) {
+      setSessionsFor(null);
+      setSessions(null);
+      setReplaySessionId(null);
+      return;
+    }
+    setSessionsFor(assignmentId);
+    setSessions(null);
+    setReplaySessionId(null);
+    loadSessions(assignmentId);
+  }
+
+  if (loading && !klass) {
+    return (
+      <AppShell>
+        <div className="portal-body">
+          <p className="empty-note">Loading class…</p>
+        </div>
+      </AppShell>
+    );
+  }
+
+  if (error && !klass) {
+    return (
+      <AppShell>
+        <div className="portal-body">
+          <div className="form-error">
+            {error} <button className="link-btn" onClick={load}>Retry</button>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell>
       <div className="portal-body">
         {error && <div className="form-error">{error}</div>}
 
         <div className="section">
           <h2>Class</h2>
           <div className="card">
-            <span className="card-title">{klass?.name ?? "Loading…"}</span>
+            <span className="card-title">{klass?.name ?? "—"}</span>
             {isInstructor && klass?.joinCode && (
               <span className="join-code" title="Share with students">{klass.joinCode}</span>
             )}
@@ -255,7 +335,11 @@ export default function ClassPage() {
         <div className="section">
           <h2>Assignments</h2>
           {assignments.length === 0 ? (
-            <p className="empty-note">No assignments yet.</p>
+            <p className="empty-note">
+              {isInstructor
+                ? "No assignments yet — create one above."
+                : "No assignments yet — check back later."}
+            </p>
           ) : (
             <table className="assign-table">
               <thead>
@@ -268,26 +352,99 @@ export default function ClassPage() {
                 </tr>
               </thead>
               <tbody>
-                {assignments.map((a) => (
-                  <tr key={a.id}>
-                    <td>{a.title}</td>
-                    <td><span className={`type-pill ${a.type}`}>{a.type}</span></td>
-                    <td>{a.week}</td>
-                    <td>{fmtDate(a.createdAt)}</td>
-                    <td>
-                      {isInstructor ? (
-                        <Link className="link-btn" to={`/dashboard?assignmentId=${a.id}`}>View Sessions →</Link>
-                      ) : (
-                        <Link className="link-btn" to={`/exam/${a.id}`}>Open →</Link>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {assignments.map((a) => {
+                  const submitted = klass?.mySubmissions?.includes(a.id) ?? false;
+                  return [
+                    <tr key={a.id}>
+                      <td>{a.title}</td>
+                      <td><span className={`type-pill ${a.type}`}>{a.type}</span></td>
+                      <td>{a.week}</td>
+                      <td>{fmtDate(a.createdAt)}</td>
+                      <td>
+                        {isInstructor ? (
+                          <button className="link-btn" onClick={() => toggleSessions(a.id)}>
+                            {sessionsFor === a.id ? "Hide Sessions" : "View Sessions"}
+                          </button>
+                        ) : (
+                          <span className="row-actions">
+                            {submitted && <span className="submitted-badge">Submitted</span>}
+                            <Link className="link-btn" to={`/exam/${a.id}`}>
+                              {submitted ? "View →" : "Open →"}
+                            </Link>
+                          </span>
+                        )}
+                      </td>
+                    </tr>,
+                    isInstructor && sessionsFor === a.id && (
+                      <tr key={`${a.id}-sessions`} className="sessions-row">
+                        <td colSpan={5}>
+                          {sessionsLoading ? (
+                            <p className="empty-note">Loading sessions…</p>
+                          ) : sessionsError ? (
+                            <p className="form-error">
+                              {sessionsError}{" "}
+                              <button className="link-btn" onClick={() => loadSessions(a.id)}>Retry</button>
+                            </p>
+                          ) : !sessions || sessions.length === 0 ? (
+                            <p className="empty-note">No student sessions yet.</p>
+                          ) : (
+                            <table className="session-table">
+                              <thead>
+                                <tr>
+                                  <th>Student</th>
+                                  <th>Status</th>
+                                  <th>Runs</th>
+                                  <th title="Metric A — Trial-and-Error">A</th>
+                                  <th title="Metric B — Linear Injection">B</th>
+                                  <th title="Metric C — Robotic Variance">C</th>
+                                  <th>Submitted</th>
+                                  <th></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {sessions.map((s) => (
+                                  <tr key={s.id}>
+                                    <td>{s.studentId}</td>
+                                    <td>
+                                      <span className={`status-pill ${s.status === "SUBMITTED" ? "done" : "active"}`}>
+                                        {s.status}
+                                      </span>
+                                    </td>
+                                    <td>{s.runCount}</td>
+                                    <td><FlagPill metric={s.forensicsResults?.metricA} /></td>
+                                    <td><FlagPill metric={s.forensicsResults?.metricB} /></td>
+                                    <td><FlagPill metric={s.forensicsResults?.metricC} /></td>
+                                    <td>{s.status === "SUBMITTED" ? fmtTime(s.updatedAt) : "—"}</td>
+                                    <td>
+                                      <button className="link-btn" onClick={() => setReplaySessionId(s.id)}>
+                                        Replay
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    ),
+                  ];
+                })}
               </tbody>
             </table>
           )}
         </div>
+
+        {isInstructor && replaySessionId && (
+          <div className="section">
+            <h2>
+              Session replay{" "}
+              <button className="link-btn" onClick={() => setReplaySessionId(null)}>× close</button>
+            </h2>
+            <DvrPlayer sessionId={replaySessionId} />
+          </div>
+        )}
       </div>
-    </div>
+    </AppShell>
   );
 }

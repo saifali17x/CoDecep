@@ -208,6 +208,10 @@ export default function EditorPane({
           theme="vs-dark"
           onMount={handleMount}
           options={{
+            // Visually lock the editor once submitted (Session 16). The
+            // Immune Phase already disarms telemetry; readOnly makes the
+            // exam-over state unmistakable.
+            readOnly: isSubmitted,
             fontSize: 14,
             fontFamily: '"Cascadia Code", ui-monospace, Consolas, monospace',
             minimap: { enabled: false },

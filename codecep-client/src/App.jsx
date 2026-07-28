@@ -29,24 +29,33 @@ function App({
   assignmentId,
   labMode: labModeProp,
   studentId: studentIdProp,
+  initialStatus: initialStatusProp,
 } = {}) {
   // Effective values: props (real identity from ExamPage) fall back to the
   // hardcoded module consts so the propless /legacy dev flow is unchanged.
   const LAB_MODE_EFFECTIVE = labModeProp ?? LAB_MODE;
   const STUDENT_ID_EFFECTIVE = studentIdProp ?? STUDENT_ID;
+  // Session 16: ExamPage passes initialStatus='SUBMITTED' when reopening an
+  // already-submitted assignment — the IDE mounts locked (Immune Phase from
+  // the first frame; no session create, no telemetry, no fresh submission).
+  const INITIAL_STATUS = initialStatusProp ?? "IN_PROGRESS";
 
   const [code, setCode] = useState(DEFAULT_CODE);
   const [language, setLanguage] = useState("cpp");
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [terminalLines, setTerminalLines] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [sessionStatus, setSessionStatus] = useState("IN_PROGRESS");
+  const [sessionStatus, setSessionStatus] = useState(INITIAL_STATUS);
   const [sessionId, setSessionId] = useState(null);
+  // 'SUBMITTED' (fresh submit) | 'ALREADY_SUBMITTED' (reopen/re-submit) | null
+  const [submitOutcome, setSubmitOutcome] = useState(
+    INITIAL_STATUS === "SUBMITTED" ? "ALREADY_SUBMITTED" : null,
+  );
 
   // Refs mirror state so the stale closure inside EditorPane's setInterval
   // always reads the CURRENT value, not the value frozen at mount.
   const sessionIdRef = useRef(null);
-  const sessionStatusRef = useRef("IN_PROGRESS");
+  const sessionStatusRef = useRef(INITIAL_STATUS);
   const codeRef = useRef(DEFAULT_CODE);
 
   // Focus-gated timer — counts milliseconds while the tab is visible
@@ -125,13 +134,23 @@ function App({
   function handleSubmit() {
     setSessionStatus("SUBMITTED");
     sessionStatusRef.current = "SUBMITTED"; // ← disarm the flush immediately
+    setSubmitOutcome("SUBMITTED"); // optimistic; refined by the server response
     const id = sessionIdRef.current;
     if (id) {
       fetch(`http://localhost:3001/api/session/${id}/submit`, {
         method: "POST",
-      }).catch((err) =>
-        console.error("[SUBMIT] Failed to notify server:", err),
-      );
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          // Distinguish a real submission from an idempotency hit so the
+          // student never thinks a fresh submission happened when it didn't.
+          if (data?.status === "ALREADY_SUBMITTED") {
+            setSubmitOutcome("ALREADY_SUBMITTED");
+          }
+        })
+        .catch((err) =>
+          console.error("[SUBMIT] Failed to notify server:", err),
+        );
     }
   }
 
@@ -238,6 +257,13 @@ function App({
         onSubmit={handleSubmit}
         isSubmitted={sessionStatus === "SUBMITTED"}
       />
+      {sessionStatus === "SUBMITTED" && (
+        <div className={`submit-banner ${submitOutcome === "ALREADY_SUBMITTED" ? "already" : "fresh"}`}>
+          {submitOutcome === "ALREADY_SUBMITTED"
+            ? "This assignment has already been submitted. The editor is locked."
+            : "✓ Submitted successfully. You may now safely close this tab or return to your class."}
+        </div>
+      )}
       <div className="workspace">
         <Sidebar />
         <div className="main-content">

@@ -13,6 +13,22 @@
   overflow: hidden;
 }
 
+/* Submission confirmation banner (Session 16) — unmistakable exam-over state */
+.submit-banner {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  border-bottom: 1px solid #30363d;
+}
+.submit-banner.fresh {
+  background: #12261e;
+  color: #3fb950;
+}
+.submit-banner.already {
+  background: #2b2111;
+  color: #d29922;
+}
+
 .main-content {
   display: flex;
   flex-direction: column;

@@ -611,7 +611,14 @@ app.get('/api/classes/:id', requireAuth, async (req: Request, res: Response) => 
     res.status(403).json({ error: 'Not the instructor or a member of this class.' })
     return
   }
-  res.json(klass)
+  // Session 16: which of this class's assignments has THIS user already
+  // submitted — lets the student ClassPage badge them. Additive field.
+  const submitted = await prisma.session.findMany({
+    where: { userId: req.user!.userId, status: 'SUBMITTED', assignment: { classId } },
+    select: { assignmentId: true },
+  })
+  const mySubmissions = [...new Set(submitted.map((s) => s.assignmentId).filter(Boolean))]
+  res.json({ ...klass, mySubmissions })
 })
 
 // ── POST /api/assignments/preview-allowlist ────────────────────────────────
@@ -754,8 +761,111 @@ app.get('/api/assignments/:id', requireAuth, async (req: Request, res: Response)
     res.status(404).json({ error: 'Assignment not found.' })
     return
   }
-  res.json(assignment)
+  // Session 16: tell the requester whether THEY already submitted this
+  // assignment, so ExamPage can show the locked state instead of silently
+  // creating a fresh session. Additive — existing consumers are unaffected.
+  const submitted = await withRetry(() =>
+    prisma.session.findFirst({
+      where: { assignmentId: assignment.id, userId: req.user!.userId, status: 'SUBMITTED' },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, status: true },
+    })
+  )
+  res.json({ ...assignment, mySubmittedSession: submitted })
 })
+
+// ── Instructor session discovery (Session 16 — READ-ONLY) ─────────────────
+// Flags-only summary: never the full forensics stats, never raw event data.
+// Framing rule: flags mean "flagged for instructor review", never "cheating".
+type SessionRow = {
+  id: string
+  studentId: string
+  status: string
+  runCount: number | null
+  createdAt: Date
+  updatedAt: Date
+  forensicsResults: unknown
+}
+
+function sessionSummary(s: SessionRow) {
+  const fr = s.forensicsResults as
+    | { metricA?: { flag?: boolean }; metricB?: { flag?: boolean }; metricC?: { flag?: boolean } }
+    | null
+  return {
+    id: s.id,
+    studentId: s.studentId,
+    status: s.status,
+    runCount: s.runCount ?? 0,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+    forensicsResults: fr
+      ? {
+          metricA: { flag: fr.metricA?.flag ?? null },
+          metricB: { flag: fr.metricB?.flag ?? null },
+          metricC: { flag: fr.metricC?.flag ?? null },
+        }
+      : null,
+  }
+}
+
+// ── GET /api/assignments/:assignmentId/sessions ────────────────────────────
+app.get(
+  '/api/assignments/:assignmentId/sessions',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const assignmentId = String(req.params.assignmentId)
+    const assignment = await prisma.assignment.findUnique({
+      where: { id: assignmentId },
+      include: { class: true },
+    })
+    if (!assignment) {
+      res.status(404).json({ error: 'Assignment not found.' })
+      return
+    }
+    if (assignment.class.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+    const sessions = await prisma.session.findMany({
+      where: { assignmentId },
+      orderBy: { updatedAt: 'desc' },
+    })
+    res.json(sessions.map(sessionSummary))
+  }
+)
+
+// ── GET /api/classes/:classId/sessions ─────────────────────────────────────
+// Class-level overview: all sessions across the class's assignments.
+app.get(
+  '/api/classes/:classId/sessions',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const classId = String(req.params.classId)
+    const klass = await prisma.class.findUnique({ where: { id: classId } })
+    if (!klass) {
+      res.status(404).json({ error: 'Class not found.' })
+      return
+    }
+    if (klass.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+    const sessions = await prisma.session.findMany({
+      where: { assignment: { classId } },
+      orderBy: { updatedAt: 'desc' },
+      include: { assignment: { select: { id: true, title: true } } },
+    })
+    res.json(
+      sessions.map((s) => ({
+        ...sessionSummary(s),
+        assignmentId: s.assignment?.id ?? null,
+        assignmentTitle: s.assignment?.title ?? null,
+      }))
+    )
+  }
+)
 
 // ── GET /api/assignments/:id/pdf ───────────────────────────────────────────
 // Streams the assignment's uploaded PDF for the exam split-pane (Phase 1).

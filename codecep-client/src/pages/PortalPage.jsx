@@ -1,28 +1,34 @@
 import { useEffect, useState, useCallback } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
+import AppShell from "../components/AppShell";
 import "./portal.css";
 
 export default function PortalPage() {
-  const { token, user, logout } = useAuth();
-  const navigate = useNavigate();
+  const { token, user } = useAuth();
   const [classes, setClasses] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   // Instructor create-class / student join-class form state
   const [name, setName] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
 
   const isInstructor = user?.role === "INSTRUCTOR";
 
   const loadClasses = useCallback(async () => {
+    setError("");
+    setLoading(true);
     try {
       const list = await apiFetch("/api/classes", { token });
       setClasses(list ?? []);
     } catch (err) {
       setError(err.message);
+    } finally {
+      setLoading(false);
     }
   }, [token]);
 
@@ -64,24 +70,25 @@ export default function PortalPage() {
     }
   }
 
-  function handleLogout() {
-    logout();
-    navigate("/login");
+  async function copyJoinCode(c) {
+    try {
+      await navigator.clipboard.writeText(c.joinCode);
+      setCopiedId(c.id);
+      setTimeout(() => setCopiedId((prev) => (prev === c.id ? null : prev)), 1500);
+    } catch {
+      // Clipboard unavailable (permissions) — the code is still selectable text.
+    }
   }
 
   return (
-    <div className="portal">
-      <div className="portal-header">
-        <span className="portal-brand">CoDecep</span>
-        <span className="portal-user">
-          <span className="role-pill">{user?.role}</span>
-          {user?.username}
-          <button className="btn btn-secondary" onClick={handleLogout}>Logout</button>
-        </span>
-      </div>
-
+    <AppShell>
       <div className="portal-body">
-        {error && <div className="form-error">{error}</div>}
+        {error && (
+          <div className="form-error">
+            {error}{" "}
+            <button className="link-btn" onClick={loadClasses}>Retry</button>
+          </div>
+        )}
 
         <div className="section">
           <h2>{isInstructor ? "Create a class" : "Join a class"}</h2>
@@ -118,9 +125,13 @@ export default function PortalPage() {
 
         <div className="section">
           <h2>Your classes</h2>
-          {classes.length === 0 ? (
+          {loading ? (
+            <p className="empty-note">Loading classes…</p>
+          ) : classes.length === 0 ? (
             <p className="empty-note">
-              {isInstructor ? "No classes yet — create one above." : "You haven't joined any classes yet."}
+              {isInstructor
+                ? "No classes yet — create your first class above."
+                : "You haven't joined any classes yet. Enter a join code above."}
             </p>
           ) : (
             <div className="card-grid">
@@ -128,11 +139,15 @@ export default function PortalPage() {
                 <div className="card" key={c.id}>
                   <span className="card-title">{c.name}</span>
                   {isInstructor ? (
-                    <span
-                      className="join-code"
-                      title="Click to select — share with students"
-                    >
-                      {c.joinCode}
+                    <span className="join-code-row">
+                      <span className="join-code" title="Share with students">{c.joinCode}</span>
+                      <button
+                        className="link-btn copy-btn"
+                        type="button"
+                        onClick={() => copyJoinCode(c)}
+                      >
+                        {copiedId === c.id ? "Copied!" : "Copy"}
+                      </button>
                     </span>
                   ) : (
                     <span className="card-meta">Instructor: {c.instructorId?.slice(0, 8) ?? "—"}…</span>
@@ -144,6 +159,6 @@ export default function PortalPage() {
           )}
         </div>
       </div>
-    </div>
+    </AppShell>
   );
 }

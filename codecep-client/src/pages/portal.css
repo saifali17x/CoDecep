@@ -115,6 +115,56 @@
 }
 .pw-meter-label { font-size: 11px; min-width: 44px; text-align: right; }
 
+/* ── App shell nav (Session 16) ──────────────────────────────────────────── */
+.shell-left { display: flex; align-items: center; gap: 20px; }
+.shell-left .portal-brand { text-decoration: none; color: #c9d1d9; }
+.shell-nav { display: flex; gap: 4px; }
+.shell-link {
+  color: #8b949e;
+  text-decoration: none;
+  font-size: 13px;
+  padding: 5px 10px;
+  border-radius: 6px;
+}
+.shell-link:hover { color: #e6edf3; background: #21262d; }
+.shell-link.active { color: #e6edf3; background: #21262d; }
+
+/* ── Instructor session discovery (Session 16) ───────────────────────────── */
+.sessions-row td {
+  background: #0d1117;
+  border-bottom: 1px solid #21262d;
+  padding: 10px 14px;
+}
+.session-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.session-table th {
+  text-align: left; color: #6e7681; font-weight: 400;
+  padding: 4px 8px; border-bottom: 1px solid #21262d;
+}
+.session-table td { padding: 6px 8px; border-bottom: 1px solid #161b22; }
+.flag-pill {
+  display: inline-block; min-width: 20px; text-align: center;
+  font-size: 11px; padding: 1px 6px; border-radius: 10px;
+  border: 1px solid #30363d;
+}
+.flag-pill.flagged { color: #f59e0b; border-color: #f59e0b55; }
+.flag-pill.clear { color: #3fb950; border-color: #3fb95055; }
+.flag-pill.pending { color: #6e7681; }
+.status-pill {
+  font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  border: 1px solid #30363d;
+}
+.status-pill.done { color: #3fb950; }
+.status-pill.active { color: #79c0ff; }
+
+/* Student submitted badge + join-code copy (Session 16) */
+.row-actions { display: inline-flex; align-items: center; gap: 10px; }
+.submitted-badge {
+  font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  border: 1px solid #3fb95055; color: #3fb950;
+}
+.join-code-row { display: inline-flex; align-items: center; gap: 8px; }
+.copy-btn { font-size: 12px; }
+
 .auth-alt {
   margin-top: 16px;
   font-size: 12px;

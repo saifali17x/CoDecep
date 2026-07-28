@@ -1,5 +1,6 @@
 import { useSearchParams } from "react-router-dom";
 import Dashboard from "../components/Dashboard";
+import AppShell from "../components/AppShell";
 import "./portal.css";
 
 // Route wrapper for the existing live-alert Dashboard.
@@ -10,11 +11,11 @@ export default function InstructorDashboard() {
   const assignmentId = params.get("assignmentId");
 
   return (
-    <>
+    <AppShell>
       {assignmentId && (
         <div className="dash-filter">Monitoring assignment {assignmentId}</div>
       )}
       <Dashboard />
-    </>
+    </AppShell>
   );
 }
