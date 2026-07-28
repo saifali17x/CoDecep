@@ -11,16 +11,89 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
 import bcrypt from 'bcryptjs'
 import multer from 'multer'
+import rateLimit from 'express-rate-limit'
 import { PDFParse } from 'pdf-parse'
 import { validateAST } from './ast/parser'
 import { computeMetricA, computeLinearInjection, computeRoboticVariance } from './forensics/metrics'
 import { signToken, requireAuth, requireRole } from './auth'
 import { parseSyllabusToAllowlist } from './gemini'
+import {
+  validate,
+  registerSchema,
+  loginSchema,
+  createClassSchema,
+  joinClassSchema,
+  createAssignmentSchema,
+  astValidateSchema,
+  sessionCreateSchema,
+  telemetrySubmitSchema,
+} from './validation'
 
 dotenv.config()
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
+
+// ── Debug logging gate ─────────────────────────────────────────────────────
+// Per-request traces ([SESSION]/[INGEST]/[AST]/[EXECUTE]/[RELAY]/[SOCKET])
+// only print with DEBUG=true. Operational logs (startup, [FORENSICS],
+// [GEMINI], [AUTH], [CLASS], [ASSIGNMENT], [ERROR]) always print.
+const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
+function debugLog(...args: unknown[]) {
+  if (DEBUG) console.log(...args)
+}
+
+// ── DB retry helper (Neon serverless drops idle connections) ──────────────
+// Retries Prisma calls on connection-level errors only, with light backoff.
+// Used ONLY on the exam hot paths (session create, telemetry ingest, submit)
+// where a transient drop would harm an exam in progress.
+const TRANSIENT_CODES = [
+  'P1001', 'P1002', 'P1008', 'P1017', 'P2024', // Prisma connection/pool codes
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', // raw socket codes
+  '57P01', // postgres admin_shutdown (Neon killing a pooled connection)
+]
+const TRANSIENT_MESSAGE = /connection|closed|terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|timeout/i
+
+function isTransientDbError(err: unknown): boolean {
+  // Prisma driver-adapter errors wrap the underlying pg error — walk the
+  // cause chain so the real connection error is seen wherever it hides.
+  let current: unknown = err
+  for (let depth = 0; depth < 5 && current; depth++) {
+    const code = (current as { code?: string }).code
+    if (code && TRANSIENT_CODES.includes(code)) return true
+    const message = current instanceof Error ? current.message : typeof current === 'string' ? current : ''
+    if (TRANSIENT_MESSAGE.test(message)) return true
+    const meta = (current as { meta?: { message?: unknown } }).meta
+    if (typeof meta?.message === 'string' && TRANSIENT_MESSAGE.test(meta.message)) return true
+    current = (current as { cause?: unknown }).cause
+  }
+  return false
+}
+
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3, delayMs = 150): Promise<T> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      if (!isTransientDbError(err) || attempt === attempts - 1) throw err
+      await new Promise((resolve) => setTimeout(resolve, delayMs * 2 ** attempt))
+    }
+  }
+  throw lastErr
+}
+
+// ── Auth rate limiter (register + login ONLY) ─────────────────────────────
+// Telemetry/session/AST routes are never rate-limited — a real exam produces
+// many rapid calls.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts, please try again later' },
+})
 
 // ── Parse REDIS_URL into plain host/port options ───────────────────────────
 const redisUrl = new URL(process.env.REDIS_URL ?? 'redis://localhost:6379')
@@ -30,7 +103,10 @@ const redisConnection = {
 }
 
 // ── Prisma 7 client (adapter-pg pattern) ──────────────────────────────────
-const pool = new Pool({ connectionString: process.env.DATABASE_URL })
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, keepAlive: true })
+// Neon kills idle pooled connections; without this listener an idle-client
+// 'error' event would crash the whole process.
+pool.on('error', (err) => console.error('[DB] idle client error:', err.message))
 const adapter = new PrismaPg(pool)
 const prisma = new PrismaClient({ adapter })
 
@@ -87,34 +163,39 @@ app.use(cors({
 app.use(express.json())
 
 // ── POST /api/session/create ──────────────────────────────────────────────
-app.post('/api/session/create', async (req: Request, res: Response) => {
+app.post('/api/session/create', validate(sessionCreateSchema), async (req: Request, res: Response) => {
   const { studentId, userId, assignmentId } = req.body
 
-  if (typeof studentId !== 'string' || studentId.trim().length === 0) {
-    res.status(400).json({ error: 'studentId is required.' })
-    return
-  }
+  try {
+    const existing = await withRetry(() =>
+      prisma.session.findFirst({ where: { studentId, status: 'IN_PROGRESS' } })
+    )
+    if (existing) {
+      debugLog(`[SESSION] Returning existing session ${existing.id} for ${studentId}`)
+      res.json({ sessionId: existing.id })
+      return
+    }
 
-  const existing = await prisma.session.findFirst({
-    where: { studentId, status: 'IN_PROGRESS' },
-  })
-  if (existing) {
-    console.log(`[SESSION] Returning existing session ${existing.id} for ${studentId}`)
-    res.json({ sessionId: existing.id })
-    return
+    const session = await withRetry(() =>
+      prisma.session.create({
+        data: {
+          studentId,
+          status: 'IN_PROGRESS',
+          // Backward compatible: the hardcoded student-001 dev flow sends neither.
+          ...(typeof userId === 'string' && userId.length > 0 ? { userId } : {}),
+          ...(typeof assignmentId === 'string' && assignmentId.length > 0 ? { assignmentId } : {}),
+        },
+      })
+    )
+    debugLog(`[SESSION] Created new session ${session.id} for ${studentId}`)
+    res.json({ sessionId: session.id })
+  } catch (err) {
+    if (isTransientDbError(err)) {
+      res.status(503).json({ error: 'Service temporarily unavailable, please retry' })
+      return
+    }
+    throw err
   }
-
-  const session = await prisma.session.create({
-    data: {
-      studentId,
-      status: 'IN_PROGRESS',
-      // Backward compatible: the hardcoded student-001 dev flow sends neither.
-      ...(typeof userId === 'string' && userId.length > 0 ? { userId } : {}),
-      ...(typeof assignmentId === 'string' && assignmentId.length > 0 ? { assignmentId } : {}),
-    },
-  })
-  console.log(`[SESSION] Created new session ${session.id} for ${studentId}`)
-  res.json({ sessionId: session.id })
 })
 
 // ── POST /api/telemetry/submit ─────────────────────────────────────────────
@@ -126,10 +207,10 @@ interface KeystrokeEvent {
   textLength: number
 }
 
-app.post('/api/telemetry/submit', async (req: Request, res: Response) => {
-  const { sessionId, studentId, chunk, codeSnapshot, engagedTimeMs } = req.body
+app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: Request, res: Response) => {
+  const { sessionId, chunk, codeSnapshot, engagedTimeMs } = req.body
 
-  if (!sessionId || !Array.isArray(chunk) || chunk.length === 0) {
+  if (!Array.isArray(chunk) || chunk.length === 0) {
     res.status(400).json({ error: 'Invalid payload: sessionId and non-empty chunk are required.' })
     return
   }
@@ -154,15 +235,23 @@ app.post('/api/telemetry/submit', async (req: Request, res: Response) => {
     engagedTimeMs: typeof engagedTimeMs === 'number' ? Math.round(engagedTimeMs) : null,
   }
 
-  await prisma.$executeRaw`
-    UPDATE sessions
-    SET playback_log  = playback_log  || ${JSON.stringify([playbackEntry])}::jsonb,
-        burst_history = burst_history || ${JSON.stringify([burstEntry])}::jsonb,
-        "updatedAt"   = NOW()
-    WHERE id = ${sessionId}
-  `
+  try {
+    await withRetry(() => prisma.$executeRaw`
+      UPDATE sessions
+      SET playback_log  = playback_log  || ${JSON.stringify([playbackEntry])}::jsonb,
+          burst_history = burst_history || ${JSON.stringify([burstEntry])}::jsonb,
+          "updatedAt"   = NOW()
+      WHERE id = ${sessionId}
+    `)
+  } catch (err) {
+    if (isTransientDbError(err)) {
+      res.status(503).json({ error: 'Service temporarily unavailable, please retry' })
+      return
+    }
+    throw err
+  }
 
-  console.log(`[INGEST] session=${sessionId} +${events.length} events appended`)
+  debugLog(`[INGEST] session=${sessionId} +${events.length} events appended`)
   res.status(202).json({ accepted: events.length })
 })
 
@@ -170,15 +259,26 @@ app.post('/api/telemetry/submit', async (req: Request, res: Response) => {
 app.post('/api/session/:id/submit', async (req: Request, res: Response) => {
   const sessionId = String(req.params.id)
   try {
-    const session = await prisma.session.update({
-      where: { id: sessionId, status: 'IN_PROGRESS' },
-      data: { status: 'SUBMITTED' },
-    })
+    const session = await withRetry(() =>
+      prisma.session.update({
+        where: { id: sessionId, status: 'IN_PROGRESS' },
+        data: { status: 'SUBMITTED' },
+      })
+    )
     await telemetryQueue.add('forensics', { sessionId: session.id })
     console.log(`[SUBMIT] Session ${session.id} → SUBMITTED, forensics job enqueued`)
     res.status(200).json({ status: 'SUBMITTED' })
-  } catch {
-    res.status(200).json({ status: 'ALREADY_SUBMITTED' })
+  } catch (err) {
+    // P2025 = no IN_PROGRESS row matched — the true idempotency case.
+    if ((err as { code?: string } | null)?.code === 'P2025') {
+      res.status(200).json({ status: 'ALREADY_SUBMITTED' })
+      return
+    }
+    if (isTransientDbError(err)) {
+      res.status(503).json({ error: 'Service temporarily unavailable, please retry' })
+      return
+    }
+    throw err
   }
 })
 
@@ -285,7 +385,7 @@ function resolveAssignmentAllowlist(
   return bestList
 }
 
-app.post('/api/ast/validate', async (req: Request, res: Response) => {
+app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, res: Response) => {
   const { code, assignmentId } = req.body
 
   if (typeof code !== 'string' || code.trim().length === 0) {
@@ -315,7 +415,7 @@ app.post('/api/ast/validate', async (req: Request, res: Response) => {
   }
 
   const result = await validateAST(code, allowlist)
-  console.log(`[AST] Validated ${result.violations.length} violation(s) — isValid: ${result.isValid} (allowlist: ${allowlistSource})`)
+  debugLog(`[AST] Validated ${result.violations.length} violation(s) — isValid: ${result.isValid} (allowlist: ${allowlistSource})`)
   res.status(200).json(result)
 })
 
@@ -352,7 +452,7 @@ app.post('/api/execute', async (req: Request, res: Response) => {
     }
 
     const output = data.compile_output ?? data.stderr ?? data.stdout ?? '(no output)'
-    console.log(`[EXECUTE] lang=${lang ?? 'cpp'} id=${languageId} → output (${output.length} chars)`)
+    debugLog(`[EXECUTE] lang=${lang ?? 'cpp'} id=${languageId} → output (${output.length} chars)`)
 
     // Increment runCount so Metric A has an accurate compile count
     if (typeof sessionId === 'string' && sessionId.length > 0) {
@@ -374,18 +474,10 @@ app.post('/api/execute', async (req: Request, res: Response) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── POST /api/auth/register ────────────────────────────────────────────────
-app.post('/api/auth/register', async (req: Request, res: Response) => {
+app.post('/api/auth/register', authLimiter, validate(registerSchema), async (req: Request, res: Response) => {
+  // validate(registerSchema) has already enforced username format and the
+  // password policy (8–72 chars, letter + number) before any DB access.
   const { username, password, role } = req.body
-
-  if (typeof username !== 'string' || username.trim().length === 0 ||
-      typeof password !== 'string' || password.length === 0) {
-    res.status(400).json({ error: 'username and password are required.' })
-    return
-  }
-  if (role !== 'INSTRUCTOR' && role !== 'STUDENT') {
-    res.status(400).json({ error: "role must be 'INSTRUCTOR' or 'STUDENT'." })
-    return
-  }
 
   const existing = await prisma.user.findUnique({ where: { username } })
   if (existing) {
@@ -401,13 +493,8 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 })
 
 // ── POST /api/auth/login ───────────────────────────────────────────────────
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+app.post('/api/auth/login', authLimiter, validate(loginSchema), async (req: Request, res: Response) => {
   const { username, password } = req.body
-
-  if (typeof username !== 'string' || typeof password !== 'string') {
-    res.status(400).json({ error: 'username and password are required.' })
-    return
-  }
 
   // Same message for unknown user and wrong password — prevents username enumeration.
   const user = await prisma.user.findUnique({ where: { username } })
@@ -444,12 +531,8 @@ function generateJoinCode(): string {
   ).join('')
 }
 
-app.post('/api/classes', requireAuth, requireRole('INSTRUCTOR'), async (req: Request, res: Response) => {
+app.post('/api/classes', requireAuth, requireRole('INSTRUCTOR'), validate(createClassSchema), async (req: Request, res: Response) => {
   const { name } = req.body
-  if (typeof name !== 'string' || name.trim().length === 0) {
-    res.status(400).json({ error: 'name is required.' })
-    return
-  }
 
   // Retry on join-code collision (unique constraint on classes.joinCode)
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -479,12 +562,8 @@ app.get('/api/classes', requireAuth, async (req: Request, res: Response) => {
 })
 
 // ── POST /api/classes/join ─────────────────────────────────────────────────
-app.post('/api/classes/join', requireAuth, requireRole('STUDENT'), async (req: Request, res: Response) => {
+app.post('/api/classes/join', requireAuth, requireRole('STUDENT'), validate(joinClassSchema), async (req: Request, res: Response) => {
   const { joinCode } = req.body
-  if (typeof joinCode !== 'string' || joinCode.trim().length === 0) {
-    res.status(400).json({ error: 'joinCode is required.' })
-    return
-  }
 
   const klass = await prisma.class.findUnique({ where: { joinCode: joinCode.trim().toUpperCase() } })
   if (!klass) {
@@ -601,19 +680,13 @@ app.post(
   requireAuth,
   requireRole('INSTRUCTOR'),
   upload.single('syllabus'),
+  // Multipart: multer populates req.body with the text fields FIRST, then the
+  // schema validates them (title/type/week/allowlist).
+  validate(createAssignmentSchema),
   async (req: Request, res: Response) => {
     const classId = String(req.params.classId)
     const { title, type } = req.body
     const week = Number.parseInt(req.body.week, 10)
-
-    if (typeof title !== 'string' || title.trim().length === 0) {
-      res.status(400).json({ error: 'title is required.' })
-      return
-    }
-    if (type !== 'LIVE_LAB' && type !== 'ASSESSMENT') {
-      res.status(400).json({ error: "type must be 'LIVE_LAB' or 'ASSESSMENT'." })
-      return
-    }
 
     const klass = await prisma.class.findUnique({ where: { id: classId } })
     if (!klass) {
@@ -669,10 +742,14 @@ app.get('/api/classes/:classId/assignments', requireAuth, async (req: Request, r
 // ── GET /api/assignments/:id ───────────────────────────────────────────────
 // Called by the student IDE on load to get week/type/allowlist.
 app.get('/api/assignments/:id', requireAuth, async (req: Request, res: Response) => {
-  const assignment = await prisma.assignment.findUnique({
-    where: { id: String(req.params.id) },
-    include: { class: true },
-  })
+  // withRetry: this load is how a student OPENS an exam — a transient Neon
+  // drop here must not block the exam from starting.
+  const assignment = await withRetry(() =>
+    prisma.assignment.findUnique({
+      where: { id: String(req.params.id) },
+      include: { class: true },
+    })
+  )
   if (!assignment) {
     res.status(404).json({ error: 'Assignment not found.' })
     return
@@ -713,6 +790,33 @@ app.get('/api/assignments/:id/pdf', requireAuth, async (req: Request, res: Respo
     .pipe(res)
 })
 
+// ── 404 + global error handling (END of middleware chain) ─────────────────
+// Every unmatched route and every uncaught error returns JSON — never the
+// Express HTML error page (kills the frontend "Unexpected token '<'" class).
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ error: 'Not found' })
+})
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: unknown, _req: Request, res: Response, _next: express.NextFunction) => {
+  // Malformed JSON body from express.json() → clean 400.
+  if ((err as { type?: string } | null)?.type === 'entity.parse.failed') {
+    res.status(400).json({ error: 'Malformed JSON body' })
+    return
+  }
+  if (err instanceof Error && err.message.startsWith('CORS')) {
+    res.status(403).json({ error: 'CORS: origin not allowed' })
+    return
+  }
+  // Log name/code/message only — never a stack trace or request body to the client.
+  const errName = err instanceof Error ? err.name : typeof err
+  const errCode = (err as { code?: string } | null)?.code ?? ''
+  console.error('[ERROR]', errName, errCode, err instanceof Error ? err.message.replace(/\s+/g, ' ').slice(0, 300) : err)
+  if (!res.headersSent) {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 // ── Socket.io setup ───────────────────────────────────────────────────────
 // Constraint 3: WebSockets carry ONLY TAB_OUT, ILLEGAL_PASTE, AST_VIOLATION.
 // No raw telemetry, no burst data, no keystroke streams go over this channel.
@@ -724,11 +828,11 @@ const io = new SocketServer(httpServer, {
 io.on('connection', (socket) => {
   socket.on('join_instructor', () => {
     socket.join('instructors')
-    console.log('[SOCKET] Instructor joined room')
+    debugLog('[SOCKET] Instructor joined room')
   })
 
   socket.on('alert', (payload: { type: string; studentId: string; sessionId: string; timestamp: number; detail: string }) => {
-    console.log(`[RELAY] ${payload.type} -> instructors | session=${payload.sessionId} detail="${payload.detail}"`)
+    debugLog(`[RELAY] ${payload.type} -> instructors | session=${payload.sessionId} detail="${payload.detail}"`)
     io.to('instructors').emit('alert', payload)
   })
 })

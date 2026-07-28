@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import socket from "../socket";
+import { debugLog } from "../debug";
 import "./EditorPane.css";
 
 const PASTE_THRESHOLD = 50; // charDelta > 50 triggers ILLEGAL_PASTE (per CLAUDE.md)
@@ -124,7 +125,7 @@ export default function EditorPane({
         event.provenance = provenance; // tagged in telemetry either way
 
         if (provenance === "internal") {
-          console.log(`[PASTE] internal paste (+${charDelta} chars) — no alert`);
+          debugLog(`[PASTE] internal paste (+${charDelta} chars) — no alert`);
           return;
         }
         const payload = {
@@ -134,7 +135,7 @@ export default function EditorPane({
           timestamp: now,
           detail: `external paste, +${charDelta} chars`,
         };
-        console.log("[EMIT] ILLEGAL_PASTE", payload);
+        debugLog("[EMIT] ILLEGAL_PASTE", payload);
         socket.emit("alert", payload);
       }, 0);
     }
@@ -162,7 +163,7 @@ export default function EditorPane({
               timestamp: Date.now(),
               detail: `${violations.length} violation(s): ${violations[0]?.nodeType ?? "unknown"}`,
             };
-            console.log("[EMIT] AST_VIOLATION", payload);
+            debugLog("[EMIT] AST_VIOLATION", payload);
             socket.emit("alert", payload);
           }
         } else {

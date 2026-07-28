@@ -25,7 +25,12 @@ export async function apiFetch(path, { method = "GET", body, token } = {}) {
 
   if (!res.ok) {
     const message = data?.error ?? `Request failed — HTTP ${res.status}`;
-    throw new Error(message);
+    const err = new Error(message);
+    // Field-level validation errors from the backend's 400 response
+    // ([{ field, message }]) — forms map these to the right inputs.
+    err.details = data?.details;
+    err.status = res.status;
+    throw err;
   }
   return data;
 }

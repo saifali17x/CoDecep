@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import socket from "../socket";
 import DvrPlayer from "./DvrPlayer";
+import { debugLog } from "../debug";
 import "./Dashboard.css";
 
 const TYPE_COLORS = {
@@ -25,7 +26,7 @@ export default function Dashboard() {
     const onConnect = () => setConnected(true);
     const onDisconnect = () => setConnected(false);
     const onAlert = (payload) => {
-      console.log("[RECV]", payload.type, payload);
+      debugLog("[RECV]", payload.type, payload);
       setAlerts((prev) => [payload, ...prev]);
     };
 

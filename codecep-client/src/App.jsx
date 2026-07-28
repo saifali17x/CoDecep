@@ -5,6 +5,7 @@ import EditorPane from "./components/EditorPane";
 import Terminal from "./components/Terminal";
 import StatusBar from "./components/StatusBar";
 import socket from "./socket";
+import { debugLog } from "./debug";
 import "./App.css";
 
 // LIVE_LAB = tab-out alerts are active. ASSESSMENT = tab-outs are ignored.
@@ -83,7 +84,7 @@ function App({
             timestamp: Date.now(),
             detail: "tab lost focus",
           };
-          console.log("[EMIT] TAB_OUT", payload);
+          debugLog("[EMIT] TAB_OUT", payload);
           socket.emit("alert", payload);
         }
       } else {

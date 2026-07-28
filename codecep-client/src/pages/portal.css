@@ -97,6 +97,24 @@
   min-height: 14px;
 }
 
+/* Inline field hints / errors + password strength meter (Session 15) */
+.field-hint { margin: 0; font-size: 11px; color: #6e7681; }
+.field-error { margin: 0; font-size: 11px; color: #f85149; }
+.pw-meter { display: flex; align-items: center; gap: 8px; }
+.pw-meter-track {
+  flex: 1;
+  height: 5px;
+  background: #21262d;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.pw-meter-bar {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.15s ease, background 0.15s ease;
+}
+.pw-meter-label { font-size: 11px; min-width: 44px; text-align: right; }
+
 .auth-alt {
   margin-top: 16px;
   font-size: 12px;
