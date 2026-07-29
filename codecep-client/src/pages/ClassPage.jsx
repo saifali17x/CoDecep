@@ -4,6 +4,12 @@ import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import AppShell from "../components/AppShell";
 import DvrPlayer from "../components/DvrPlayer";
+import {
+  metricASeverity,
+  metricBSeverity,
+  metricCSeverity,
+  LEVEL_COLORS,
+} from "../lib/metricColors";
 import "./portal.css";
 
 function fmtDate(iso) {
@@ -24,18 +30,17 @@ function fmtTime(iso) {
   }
 }
 
-// Probabilistic framing: a flag means "flagged for instructor review" — never
-// an accusation. Pending forensics (not yet submitted) shows a neutral dash.
-function FlagPill({ metric }) {
-  const flag = metric?.flag;
-  if (flag === true) {
-    return <span className="flag-pill flagged" title="Flagged for instructor review">⚠</span>;
-  }
-  if (flag === false) {
-    return <span className="flag-pill clear" title="No flag">✓</span>;
-  }
-  return <span className="flag-pill pending" title="Forensics pending">—</span>;
+// Probabilistic framing: red means "flagged for instructor review" — never an
+// accusation. Color is always paired with visible text (Session 17 severity
+// scale); the full label rides in the title. Pending forensics → grey dash.
+function SeverityCell({ sev, short }) {
+  return (
+    <span className="sev-cell" style={{ color: LEVEL_COLORS[sev.level] }} title={sev.label}>
+      {short}
+    </span>
+  );
 }
+const PENDING_SEV = { level: "grey", label: "Forensics pending (session not yet submitted)" };
 
 export default function ClassPage() {
   const { classId } = useParams();
@@ -411,9 +416,40 @@ export default function ClassPage() {
                                       </span>
                                     </td>
                                     <td>{s.runCount}</td>
-                                    <td><FlagPill metric={s.forensicsResults?.metricA} /></td>
-                                    <td><FlagPill metric={s.forensicsResults?.metricB} /></td>
-                                    <td><FlagPill metric={s.forensicsResults?.metricC} /></td>
+                                    <td>
+                                      {s.forensicsResults ? (
+                                        <SeverityCell
+                                          sev={metricASeverity(s.runCount)}
+                                          short={`${s.runCount} run${s.runCount === 1 ? "" : "s"}`}
+                                        />
+                                      ) : (
+                                        <SeverityCell sev={PENDING_SEV} short="—" />
+                                      )}
+                                    </td>
+                                    <td>
+                                      {s.forensicsResults ? (
+                                        <SeverityCell
+                                          sev={metricBSeverity(s.forensicsResults.metricB?.flag)}
+                                          short={s.forensicsResults.metricB?.flag ? "flag" : "ok"}
+                                        />
+                                      ) : (
+                                        <SeverityCell sev={PENDING_SEV} short="—" />
+                                      )}
+                                    </td>
+                                    <td>
+                                      {s.forensicsResults ? (
+                                        <SeverityCell
+                                          sev={metricCSeverity(s.forensicsResults.metricC?.cv ?? null)}
+                                          short={
+                                            s.forensicsResults.metricC?.cv != null
+                                              ? `CV ${s.forensicsResults.metricC.cv.toFixed(2)}`
+                                              : "—"
+                                          }
+                                        />
+                                      ) : (
+                                        <SeverityCell sev={PENDING_SEV} short="—" />
+                                      )}
+                                    </td>
                                     <td>{s.status === "SUBMITTED" ? fmtTime(s.updatedAt) : "—"}</td>
                                     <td>
                                       <button className="link-btn" onClick={() => setReplaySessionId(s.id)}>

@@ -75,3 +75,12 @@
 }
 
 .dvr-error { color: #f85149; }
+
+/* Session 17 — severity note under the colored pills */
+.dvr-severity-note {
+  display: block;
+  width: 100%;
+  font-size: 10px;
+  color: #6e7681;
+  margin-top: 2px;
+}

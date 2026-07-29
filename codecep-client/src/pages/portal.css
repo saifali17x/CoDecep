@@ -350,3 +350,6 @@
   font-size: 13px;
   font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
 }
+
+/* Session 17 — severity-colored metric cells in the session table */
+.sev-cell { font-size: 11px; white-space: nowrap; }

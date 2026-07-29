@@ -789,7 +789,11 @@ type SessionRow = {
 
 function sessionSummary(s: SessionRow) {
   const fr = s.forensicsResults as
-    | { metricA?: { flag?: boolean }; metricB?: { flag?: boolean }; metricC?: { flag?: boolean } }
+    | {
+        metricA?: { flag?: boolean }
+        metricB?: { flag?: boolean }
+        metricC?: { flag?: boolean; stats?: { cv?: number | null } }
+      }
     | null
   return {
     id: s.id,
@@ -802,7 +806,9 @@ function sessionSummary(s: SessionRow) {
       ? {
           metricA: { flag: fr.metricA?.flag ?? null },
           metricB: { flag: fr.metricB?.flag ?? null },
-          metricC: { flag: fr.metricC?.flag ?? null },
+          // cv is a single derived scalar (needed for the severity color
+          // scale) — still no full stats and never raw events.
+          metricC: { flag: fr.metricC?.flag ?? null, cv: fr.metricC?.stats?.cv ?? null },
         }
       : null,
   }
@@ -832,6 +838,64 @@ app.get(
       orderBy: { updatedAt: 'desc' },
     })
     res.json(sessions.map(sessionSummary))
+  }
+)
+
+// ── GET /api/assignments/:id/roster ────────────────────────────────────────
+// Session 17 grid dashboard: the full class roster for an assignment's exam —
+// every member student, joined with their session (if any) for THIS
+// assignment. Read-only, instructor-only, ownership-checked, flags-only.
+app.get(
+  '/api/assignments/:id/roster',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const assignmentId = String(req.params.id)
+    const assignment = await prisma.assignment.findUnique({
+      where: { id: assignmentId },
+      include: { class: true },
+    })
+    if (!assignment) {
+      res.status(404).json({ error: 'Assignment not found.' })
+      return
+    }
+    if (assignment.class.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+
+    const [memberships, sessions] = await Promise.all([
+      prisma.classMembership.findMany({
+        where: { classId: assignment.classId },
+        include: { user: { select: { id: true, username: true } } },
+      }),
+      prisma.session.findMany({
+        where: { assignmentId },
+        orderBy: { updatedAt: 'desc' },
+      }),
+    ])
+
+    const roster = memberships
+      .map((m) => {
+        // Prefer the userId link; fall back to studentId === username (the
+        // legacy identity — sessions store the username there). Sessions are
+        // updatedAt-desc, so the first match is the latest.
+        const session =
+          sessions.find((s) => s.userId === m.user.id) ??
+          sessions.find((s) => s.studentId === m.user.username) ??
+          null
+        const summary = session ? sessionSummary(session) : null
+        return {
+          userId: m.user.id,
+          username: m.user.username,
+          sessionId: session?.id ?? null,
+          status: session?.status ?? 'NOT_STARTED',
+          forensicsFlags: summary?.forensicsResults ?? null,
+        }
+      })
+      .sort((a, b) => a.username.localeCompare(b.username))
+
+    res.json(roster)
   }
 )
 

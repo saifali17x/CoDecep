@@ -1,5 +1,11 @@
 import { useState, useEffect } from "react";
 import Editor from "@monaco-editor/react";
+import {
+  metricASeverity,
+  metricBSeverity,
+  metricCSeverity,
+  LEVEL_COLORS,
+} from "../lib/metricColors";
 import "./DvrPlayer.css";
 
 const METRIC_LABELS = {
@@ -8,11 +14,23 @@ const METRIC_LABELS = {
   metricC: "Metric C (Robotic Variance)",
 };
 
-function MetricPill({ label, metric }) {
-  const flagged = metric?.flag === true;
+// Severity-colored pill (Session 17). Color is ALWAYS paired with the text
+// label; red means "flagged for review", never an accusation.
+function MetricPill({ metricKey, metric }) {
+  const sev =
+    metricKey === "metricA"
+      ? metricASeverity(metric?.runCount)
+      : metricKey === "metricC"
+        ? metricCSeverity(metric?.stats?.cv ?? null)
+        : metricBSeverity(metric?.flag);
+  const color = LEVEL_COLORS[sev.level];
   return (
-    <span className={`dvr-pill ${flagged ? "flagged" : "clear"}`}>
-      {label}: {flagged ? "⚠ Flagged for review" : "✓ No flag"}
+    <span
+      className="dvr-pill"
+      style={{ color, borderColor: color }}
+      title={metric?.reason ?? sev.label}
+    >
+      {METRIC_LABELS[metricKey]}: {sev.label}
     </span>
   );
 }
@@ -98,9 +116,16 @@ export default function DvrPlayer({ sessionId }) {
 
       <div className="dvr-forensics">
         {forensicsResults ? (
-          Object.entries(METRIC_LABELS).map(([key, label]) => (
-            <MetricPill key={key} label={label} metric={forensicsResults[key]} />
-          ))
+          <>
+            {Object.keys(METRIC_LABELS).map((key) => (
+              <MetricPill key={key} metricKey={key} metric={forensicsResults[key]} />
+            ))}
+            <span className="dvr-severity-note">
+              Colors are severity guidance — "flagged" means flagged for instructor
+              review. The run-count threshold is a configurable default; judge it
+              against task complexity.
+            </span>
+          </>
         ) : (
           <span className="dvr-pill pending">Forensics pending (session not yet submitted)</span>
         )}

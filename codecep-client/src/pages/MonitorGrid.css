@@ -1,0 +1,130 @@
+/* Session 17 — grid-first live monitoring dashboard (demo centerpiece).
+   Tile states: calm (neutral) → violating (red, pulsing) → had-violations
+   (amber; still flagged, no longer pulsing). RED = "flagged for review". */
+
+.monitor-body {
+  padding: 20px 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.monitor-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+.monitor-controls .field { margin-bottom: 0; min-width: 320px; }
+
+.monitor-main { display: flex; gap: 18px; align-items: flex-start; }
+.monitor-main .tile-grid { flex: 1; min-width: 0; }
+.monitor-main.with-dvr .tile-grid { flex: 0 0 42%; }
+.monitor-dvr { flex: 1; min-width: 0; }
+.monitor-dvr-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #8b949e;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+@media (max-width: 1100px) {
+  .monitor-main { flex-direction: column; }
+  .monitor-main.with-dvr .tile-grid { flex: 1; }
+}
+
+/* ── The grid ────────────────────────────────────────────────────────────── */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.student-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 8px;
+  text-align: left;
+  font-family: inherit;
+  background: #161b22;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  transition: background 0.4s ease, border-color 0.4s ease, box-shadow 0.4s ease;
+}
+.student-tile.clickable { cursor: pointer; }
+.student-tile.clickable:hover { border-color: #388bfd; }
+.student-tile:disabled { opacity: 0.55; cursor: default; }
+
+.student-tile.violating {
+  background: #3d1418;
+  border-color: #f85149;
+  animation: tile-pulse 1.2s ease-in-out infinite;
+}
+@keyframes tile-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, 0.45); }
+  50%      { box-shadow: 0 0 0 6px rgba(248, 81, 73, 0.08); }
+}
+
+.student-tile.had-violations {
+  background: #2b2111;
+  border-color: #d29922;
+  animation: none;
+}
+
+.tile-top { display: flex; align-items: center; gap: 8px; }
+.tile-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.status-dot.not_started { background: #6e7681; }
+.status-dot.in_progress { background: #3fb950; }
+.status-dot.submitted   { background: #58a6ff; }
+
+.alert-count {
+  flex: none;
+  min-width: 20px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #f85149;
+  color: #fff;
+}
+.student-tile.had-violations .alert-count { background: #d29922; color: #1c1c1c; }
+
+.tile-sub {
+  font-size: 11px;
+  color: #8b949e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.student-tile.violating .tile-sub { color: #ffa198; }
+.student-tile.had-violations .tile-sub { color: #e3b341; }
+
+/* ── Secondary raw alert log ─────────────────────────────────────────────── */
+.alert-log { margin-top: 24px; }
+.alert-log summary {
+  cursor: pointer;
+  color: #8b949e;
+  font-size: 13px;
+  user-select: none;
+  padding: 6px 0;
+}
+.alert-log .dash-table { margin-top: 8px; }
