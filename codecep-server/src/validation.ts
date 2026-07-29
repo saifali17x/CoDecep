@@ -44,24 +44,14 @@ export const joinClassSchema = z.object({
     .regex(/^[a-zA-Z0-9]{6}$/, 'joinCode must be 6 letters/numbers'),
 })
 
+// Session 20: assignments no longer carry an allowlist — the syllabus-derived
+// allowlist lives on the Class and is looked up by this assignment's `week`.
 export const createAssignmentSchema = z.looseObject({
   title: z.string().trim().min(1, 'title is required').max(200, 'title must be at most 200 characters'),
   type: z.enum(['LIVE_LAB', 'ASSESSMENT']),
   // Multipart text fields arrive as strings — coerce. Optional keeps the
   // pre-existing default-to-week-1 behavior when the field is absent.
   week: z.coerce.number().int('week must be an integer').min(1, 'week must be 1–20').max(20, 'week must be 1–20').optional(),
-  allowlist: z
-    .string()
-    .optional()
-    .refine((s) => {
-      if (s === undefined || s.length === 0) return true
-      try {
-        const parsed = JSON.parse(s)
-        return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      } catch {
-        return false
-      }
-    }, 'allowlist must be a JSON object string'),
 })
 
 export const astValidateSchema = z.looseObject({

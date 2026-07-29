@@ -85,13 +85,13 @@ export default function ExamPage() {
   );
 
   return (
-    <div className={assignment.pdfFilename ? "exam-layout" : undefined}>
+    <div className={assignment.assignmentPdfFilename ? "exam-layout" : undefined}>
       <div className="exam-strip">
         <button className="btn btn-secondary" onClick={() => navigate(-1)}>← Back to Class</button>
         <span className="exam-title">{assignment.title}</span>
         <span className={`type-pill ${assignment.type}`}>{assignment.type}</span>
       </div>
-      {assignment.pdfFilename ? (
+      {assignment.assignmentPdfFilename ? (
         <div className="exam-split">
           <div className="exam-split-left">
             <PdfPane assignmentId={assignmentId} />

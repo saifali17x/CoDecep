@@ -49,6 +49,12 @@ model Class {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // The COURSE syllabus (uploaded once per class, re-uploadable mid-semester)
+  // and the instructor-confirmed per-week AST allowlist Gemini parsed from it.
+  // Assignments link to it by week — see Session 20 in CLAUDE.md.
+  syllabusFilename String?
+  allowlist        Json? // { weeks: { week1: [...], ... } }
+
   memberships ClassMembership[]
   assignments Assignment[]
 
@@ -68,16 +74,20 @@ model ClassMembership {
 }
 
 model Assignment {
-  id          String   @id @default(uuid())
-  classId     String
-  class       Class    @relation(fields: [classId], references: [id])
-  title       String
-  type        String // 'LIVE_LAB' | 'ASSESSMENT'
-  week        Int      @default(1)
-  pdfFilename String? // nullable — PDF upload is optional
-  allowlist   Json? // nullable — populated by Gemini syllabus parser (Phase 6)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id      String @id @default(uuid())
+  classId String
+  class   Class  @relation(fields: [classId], references: [id])
+  title   String
+  type    String // 'LIVE_LAB' | 'ASSESSMENT'
+  week    Int    @default(1) // which week's class allowlist applies
+
+  // The TASK/QUESTION document students read in the exam split-pane.
+  // (Session 20: this was `pdfFilename`, which used to double as the syllabus.
+  // The syllabus + allowlist now live on Class.)
+  assignmentPdfFilename String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   sessions Session[]
 

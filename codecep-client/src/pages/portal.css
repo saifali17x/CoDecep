@@ -470,3 +470,54 @@
   .exam-split-left { width: 100%; height: 38%; border-right: none; border-bottom: 1px solid var(--border); }
   .exam-split-right { width: 100%; flex: 1; min-height: 0; }
 }
+
+/* ── Session 20: class syllabus manager + searchable node picker ─────────── */
+.syllabus-state { font-size: var(--fs-sm); color: var(--success); align-self: center; }
+.allowlist-actions {
+  display: flex; align-items: center; gap: var(--sp-3);
+  margin-top: var(--sp-3); padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.save-ok { color: var(--success); font-size: var(--fs-sm); }
+
+.node-picker {
+  margin: var(--sp-2) 0 var(--sp-2) 14px;
+  padding: var(--sp-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.node-search {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: var(--fs-sm);
+  font-family: inherit;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.node-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.25); }
+.node-results { max-height: 240px; overflow-y: auto; margin-top: var(--sp-2); }
+.node-group { margin-bottom: var(--sp-3); }
+.node-group-title {
+  display: block; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: var(--sp-1);
+}
+.node-group-items, .node-results > .node-option { display: inline-flex; }
+.node-group-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.node-option {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 2px 9px;
+  margin: 0 6px 6px 0;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.node-option:hover { background: var(--surface-3); border-color: var(--accent); color: var(--text); }

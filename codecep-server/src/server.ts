@@ -403,10 +403,12 @@ const week1Allowlist = [
   'field_identifier',     // the member name in a field_expression
 ]
 
-// Given an assignment's { weeks: {...} } allowlist, pick the list for its week.
-// Falls back to the highest available week <= the assignment's week, else null
-// (caller then uses the hardcoded week1Allowlist).
-function resolveAssignmentAllowlist(
+// Given the CLASS's { weeks: {...} } allowlist, pick the list for an
+// assignment's week. Falls back to the highest available week <= that week,
+// else null (caller then uses the hardcoded week1Allowlist).
+// Weeks are generated CUMULATIVE by the Gemini prompt (week N includes 1..N),
+// so a single week lookup already yields the cumulative construct set.
+function resolveWeekAllowlist(
   allowlist: unknown,
   assignmentWeek: number,
 ): string[] | null {
@@ -441,20 +443,24 @@ app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, 
     return
   }
 
-  // Per-assignment allowlist (Phase 6). Falls back to the hardcoded
-  // week1Allowlist when there is no assignment / no stored allowlist — keeps
-  // the /legacy dev flow byte-for-byte compatible. Failures here must never
-  // break validation, so lookup errors degrade to the default list.
+  // CLASS-level allowlist looked up by the assignment's week (Session 20 —
+  // the syllabus belongs to the course, not to one assignment). Falls back to
+  // the hardcoded week1Allowlist when there is no assignment / the class has
+  // no syllabus yet — keeps the /legacy dev flow byte-for-byte compatible.
+  // Failures here must never break validation, so lookup errors degrade too.
   let allowlist = week1Allowlist
   let allowlistSource = 'default'
   if (typeof assignmentId === 'string' && assignmentId.length > 0) {
     try {
-      const assignment = await prisma.assignment.findUnique({ where: { id: assignmentId } })
-      if (assignment?.allowlist) {
-        const resolved = resolveAssignmentAllowlist(assignment.allowlist, assignment.week)
+      const assignment = await prisma.assignment.findUnique({
+        where: { id: assignmentId },
+        include: { class: true },
+      })
+      if (assignment?.class?.allowlist) {
+        const resolved = resolveWeekAllowlist(assignment.class.allowlist, assignment.week)
         if (resolved) {
           allowlist = resolved
-          allowlistSource = `assignment week${assignment.week}`
+          allowlistSource = `class allowlist week${assignment.week}`
         }
       }
     } catch (err) {
@@ -669,27 +675,47 @@ app.get('/api/classes/:id', requireAuth, async (req: Request, res: Response) => 
   res.json({ ...klass, mySubmissions })
 })
 
-// ── POST /api/assignments/preview-allowlist ────────────────────────────────
-// Phase 6 preview step: parse a syllabus PDF into a per-week allowlist WITHOUT
-// saving anything. The instructor reviews/edits the result in the UI, then the
-// confirmed version is sent with the normal create-assignment request. Memory
-// storage — we only need the text here, the file itself is uploaded on create.
-const previewUpload = multer({ storage: multer.memoryStorage() })
+// multer disk storage for both uploads (syllabus + assignment task PDF).
+// multer creates uploads/ automatically when destination is a string.
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: 'uploads/',
+    filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
+  }),
+})
 
+// ── POST /api/classes/:classId/syllabus ────────────────────────────────────
+// Session 20: the COURSE syllabus is uploaded once per class (re-uploadable
+// mid-semester), stored on the Class, and parsed by Gemini into a per-week
+// allowlist. PREVIEW-THEN-CONFIRM is preserved: the parsed weeks are RETURNED
+// for the instructor to review/edit, and only persisted when they call
+// PUT /api/classes/:classId/allowlist. The PDF itself is saved immediately so
+// the instructor can re-view it.
 app.post(
-  '/api/assignments/preview-allowlist',
+  '/api/classes/:classId/syllabus',
   requireAuth,
   requireRole('INSTRUCTOR'),
-  previewUpload.single('syllabus'),
+  upload.single('syllabus'),
   async (req: Request, res: Response) => {
-    if (!req.file?.buffer) {
+    const classId = String(req.params.classId)
+    const klass = await prisma.class.findUnique({ where: { id: classId } })
+    if (!klass) {
+      res.status(404).json({ error: 'Class not found.' })
+      return
+    }
+    if (klass.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+    if (!req.file) {
       res.status(400).json({ error: "A PDF file field named 'syllabus' is required." })
       return
     }
 
     let text = ''
     try {
-      const parser = new PDFParse({ data: new Uint8Array(req.file.buffer) })
+      const buffer = fs.readFileSync(path.join(process.cwd(), 'uploads', path.basename(req.file.filename)))
+      const parser = new PDFParse({ data: new Uint8Array(buffer) })
       try {
         const parsed = await parser.getText()
         text = parsed.text?.trim() ?? ''
@@ -704,39 +730,118 @@ app.post(
       return
     }
 
+    // The document is the class's syllabus from now on, whatever Gemini does.
+    await prisma.class.update({
+      where: { id: classId },
+      data: { syllabusFilename: req.file.filename },
+    })
+
     try {
       const result = await parseSyllabusToAllowlist(text)
-      console.log(`[GEMINI] preview parsed ${Object.keys(result.weeks).length} weeks for instructor ${req.user!.userId}`)
-      res.status(200).json({ weeks: result.weeks })
+      console.log(`[GEMINI] parsed ${Object.keys(result.weeks).length} weeks for class ${classId}`)
+      res.status(200).json({ weeks: result.weeks, syllabusFilename: req.file.filename })
     } catch {
-      // Gemini failure must not block assignment creation — the UI shows the
-      // warning and lets the instructor proceed on the default allowlist.
+      // Gemini failure must never block the instructor — they can still build
+      // the allowlist by hand, and AST validation falls back to the baseline.
       res.status(200).json({
         weeks: null,
-        warning: 'Gemini could not parse this syllabus. You can proceed without it and the default allowlist will be used, or edit manually.',
+        syllabusFilename: req.file.filename,
+        warning: 'Gemini could not parse this syllabus. You can build the allowlist manually below, or the default baseline list will be used.',
       })
     }
   }
 )
 
+// ── PUT /api/classes/:classId/allowlist ────────────────────────────────────
+// Persists the instructor-CONFIRMED (possibly hand-edited) allowlist. Gemini
+// is never re-run here — this stores only what a human approved.
+app.put(
+  '/api/classes/:classId/allowlist',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const classId = String(req.params.classId)
+    const klass = await prisma.class.findUnique({ where: { id: classId } })
+    if (!klass) {
+      res.status(404).json({ error: 'Class not found.' })
+      return
+    }
+    if (klass.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+
+    const incoming = req.body?.allowlist
+    const weeks = incoming?.weeks
+    if (!incoming || typeof incoming !== 'object' || !weeks || typeof weeks !== 'object' || Array.isArray(weeks)) {
+      res.status(400).json({ error: 'Body must be { allowlist: { weeks: { week1: [...], ... } } }.' })
+      return
+    }
+    for (const [key, list] of Object.entries(weeks)) {
+      if (!Array.isArray(list) || !list.every((x) => typeof x === 'string')) {
+        res.status(400).json({ error: `Week "${key}" must be an array of node-type strings.` })
+        return
+      }
+    }
+
+    const updated = await prisma.class.update({
+      where: { id: classId },
+      data: { allowlist: { weeks } },
+    })
+    console.log(`[ALLOWLIST] Class ${classId} allowlist saved (${Object.keys(weeks).length} weeks)`)
+    res.status(200).json({ allowlist: updated.allowlist })
+  }
+)
+
+// ── GET /api/classes/:classId/syllabus/pdf ─────────────────────────────────
+// Lets the instructor re-view the syllabus they uploaded. Same traversal guard
+// as the assignment PDF route.
+app.get(
+  '/api/classes/:classId/syllabus/pdf',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const classId = String(req.params.classId)
+    const klass = await prisma.class.findUnique({ where: { id: classId } })
+    if (!klass) {
+      res.status(404).json({ error: 'Class not found.' })
+      return
+    }
+    if (klass.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+    if (!klass.syllabusFilename) {
+      res.status(404).json({ error: 'No syllabus uploaded for this class' })
+      return
+    }
+    const filePath = path.join(process.cwd(), 'uploads', path.basename(klass.syllabusFilename))
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ error: 'Syllabus file missing from storage.' })
+      return
+    }
+    res.setHeader('Content-Type', 'application/pdf')
+    fs.createReadStream(filePath)
+      .on('error', () => {
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to read PDF.' })
+        else res.end()
+      })
+      .pipe(res)
+  }
+)
+
 // ── POST /api/classes/:classId/assignments ─────────────────────────────────
-// multipart/form-data: title, type, week, syllabus? (PDF file), allowlist?
-// (JSON string of the instructor-confirmed { weeks: {...} } from the preview).
-// multer creates uploads/ automatically when destination is a string.
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: 'uploads/',
-    filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
-  }),
-})
+// multipart/form-data: title, type, week, assignmentPdf? (the TASK/QUESTION
+// document shown in the exam split-pane). Session 20: no syllabus parsing here
+// any more — the allowlist lives on the Class and is keyed by `week`.
 
 app.post(
   '/api/classes/:classId/assignments',
   requireAuth,
   requireRole('INSTRUCTOR'),
-  upload.single('syllabus'),
+  upload.single('assignmentPdf'),
   // Multipart: multer populates req.body with the text fields FIRST, then the
-  // schema validates them (title/type/week/allowlist).
+  // schema validates them (title/type/week).
   validate(createAssignmentSchema),
   async (req: Request, res: Response) => {
     const classId = String(req.params.classId)
@@ -753,29 +858,13 @@ app.post(
       return
     }
 
-    // Instructor-confirmed allowlist from the preview step (Phase 6). Gemini is
-    // NOT re-run here — this route only persists what the instructor approved.
-    // Absent or malformed → null → AST validation falls back to week1Allowlist.
-    let allowlist: { weeks: Record<string, string[]> } | null = null
-    if (typeof req.body.allowlist === 'string' && req.body.allowlist.length > 0) {
-      try {
-        const parsed = JSON.parse(req.body.allowlist)
-        if (parsed && typeof parsed === 'object' && parsed.weeks && typeof parsed.weeks === 'object') {
-          allowlist = parsed
-        }
-      } catch {
-        console.error('[ASSIGNMENT] Ignoring malformed allowlist JSON — storing null')
-      }
-    }
-
     const assignment = await prisma.assignment.create({
       data: {
         classId,
         title: title.trim(),
         type,
         week: Number.isFinite(week) && week > 0 ? week : 1,
-        pdfFilename: req.file?.filename ?? null,
-        ...(allowlist ? { allowlist } : {}),
+        assignmentPdfFilename: req.file?.filename ?? null,
       },
     })
     console.log(`[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week}) in class ${classId}`)
@@ -980,7 +1069,8 @@ app.get(
 )
 
 // ── GET /api/assignments/:id/pdf ───────────────────────────────────────────
-// Streams the assignment's uploaded PDF for the exam split-pane (Phase 1).
+// Streams the assignment's TASK/QUESTION document for the exam split-pane
+// (Session 20: this is `assignmentPdfFilename`, never the course syllabus).
 // Path-traversal guard: only ever uploads/ + basename of the STORED filename —
 // no user-supplied path segment is ever joined.
 app.get('/api/assignments/:id/pdf', requireAuth, async (req: Request, res: Response) => {
@@ -991,12 +1081,12 @@ app.get('/api/assignments/:id/pdf', requireAuth, async (req: Request, res: Respo
     res.status(404).json({ error: 'Assignment not found.' })
     return
   }
-  if (!assignment.pdfFilename) {
+  if (!assignment.assignmentPdfFilename) {
     res.status(404).json({ error: 'No PDF for this assignment' })
     return
   }
 
-  const safeName = path.basename(assignment.pdfFilename)
+  const safeName = path.basename(assignment.assignmentPdfFilename)
   const filePath = path.join(process.cwd(), 'uploads', safeName)
   if (!fs.existsSync(filePath)) {
     res.status(404).json({ error: 'PDF file missing from storage.' })
