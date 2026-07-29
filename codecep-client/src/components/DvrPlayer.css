@@ -94,3 +94,64 @@
   color: var(--text-muted);
   margin-top: 2px;
 }
+
+/* ── Session 19 — keystroke replay controls ─────────────────────────────── */
+.dvr-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-2);
+  flex-wrap: wrap;
+}
+.dvr-play { min-width: 88px; }
+.dvr-speed, .dvr-skip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.dvr-speed select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  padding: 3px 6px;
+}
+.dvr-skip input { accent-color: var(--accent); }
+.dvr-clock { margin-left: auto; font-size: var(--fs-sm); color: var(--text-secondary); }
+
+.dvr-track { position: relative; }
+.dvr-track input[type="range"] { width: 100%; accent-color: var(--info); cursor: pointer; }
+
+/* Paste tick marks on the scrubber — click to jump to the moment */
+.dvr-paste-mark {
+  position: absolute;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+}
+.dvr-paste-mark.external { background: var(--danger); }
+.dvr-paste-mark.internal { background: var(--warning); }
+.dvr-paste-mark:hover { transform: scale(1.4); }
+
+.dvr-paste-label { color: var(--warning-alt); font-weight: 600; }
+.dvr-paste-label.active { color: var(--danger); }
+
+/* Monaco decoration: the pasted block flashing into view */
+.dvr-paste-flash {
+  background: rgba(248, 81, 73, 0.35);
+  border-radius: 2px;
+  animation: paste-flash-fade 1.2s ease-out;
+}
+@keyframes paste-flash-fade {
+  0% { background: rgba(248, 81, 73, 0.6); }
+  100% { background: rgba(248, 81, 73, 0.25); }
+}

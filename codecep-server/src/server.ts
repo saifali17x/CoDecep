@@ -312,6 +312,54 @@ app.get('/api/session/:id/playback', async (req: Request, res: Response) => {
   })
 })
 
+// ── GET /api/session/:id/replay ────────────────────────────────────────────
+// Session 19 keystroke replay: full reconstruction data — snapshots (sync
+// anchors) plus the FLATTENED, in-order keystroke events. Instructor-only;
+// ownership-checked via the session's assignment→class when linked (legacy
+// sessions with no assignment are dev data — instructor role suffices).
+// Events can be large; that's fine — replay is an on-demand instructor
+// action, never a hot path.
+app.get(
+  '/api/session/:id/replay',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const session = await prisma.session.findUnique({
+      where: { id: String(req.params.id) },
+      include: { assignment: { include: { class: true } } },
+    })
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' })
+      return
+    }
+    if (session.assignment && session.assignment.class.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+
+    const log = Array.isArray(session.playback_log) ? (session.playback_log as any[]) : []
+    // eventCount per snapshot lets the replay engine partition the flattened
+    // events back into flush windows without relying on clock comparisons.
+    const snapshots = log.map((entry) => ({
+      flushedAt: entry.flushedAt,
+      codeSnapshot: entry.codeSnapshot ?? '',
+      eventCount: Array.isArray(entry.events) ? entry.events.length : 0,
+    }))
+    const events = log.flatMap((entry) => (Array.isArray(entry.events) ? entry.events : []))
+
+    res.json({
+      sessionId: session.id,
+      studentId: session.studentId,
+      status: session.status,
+      forensicsResults: session.forensicsResults,
+      startedAt: events[0]?.timestamp ?? session.createdAt.getTime(),
+      endedAt: events[events.length - 1]?.timestamp ?? session.updatedAt.getTime(),
+      snapshots,
+      events,
+    })
+  }
+)
+
 // ── POST /api/ast/validate ─────────────────────────────────────────────────
 // Baseline C++ node types every minimal valid program contains. Control-flow
 // constructs (for_statement / while_statement / do_statement) are deliberately

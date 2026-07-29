@@ -12,7 +12,9 @@ import "./App.css";
 // Will come from assignment config in a future phase.
 const LAB_MODE = "LIVE_LAB"; // 'LIVE_LAB' | 'ASSESSMENT'
 
-const DEFAULT_CODE = `#include <iostream>
+// Exported so the DVR replay engine can use the same template as the
+// initial-text anchor (display only — no behavior change).
+export const DEFAULT_CODE = `#include <iostream>
 using namespace std;
 
 int main() {
