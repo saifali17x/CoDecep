@@ -1,0 +1,98 @@
+/* ── CoDecep design tokens (Session 18) ──────────────────────────────────────
+   Single source of visual truth. GitHub-dark palette; severity colors MATCH
+   lib/metricColors.js LEVEL_COLORS exactly so the app speaks one color
+   language (red = "flagged for review", never "cheating").
+   UI text uses the sans stack; monospace is reserved for code, session IDs,
+   join codes, and metric values. */
+
+:root {
+  /* background layers */
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-2: #21262d;
+  --surface-3: #30363d;
+
+  /* borders */
+  --border: #30363d;
+  --border-subtle: #21262d;
+
+  /* text */
+  --text: #e6edf3;
+  --text-2: #c9d1d9;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+
+  /* accent + semantic (danger/warning/success/grey === metricColors.js) */
+  --accent: #388bfd;
+  --info: #58a6ff;
+  --link: #79c0ff;
+  --success: #3fb950;
+  --success-dark: #2ea043;
+  --warning: #d29922;
+  --warning-alt: #f59e0b;
+  --danger: #f85149;
+  --primary: #238636;
+  --primary-hover: #2ea043;
+
+  /* spacing scale */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* radius scale */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-pill: 999px;
+
+  /* type */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "Cascadia Code", ui-monospace, Consolas, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 18px;
+
+  --transition: 0.15s ease;
+}
+
+/* ── Global micro-polish ─────────────────────────────────────────────────── */
+
+/* Keyboard accessibility: consistent focus ring app-wide (never removed
+   without replacement). */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Slim dark scrollbars so long lists scroll cleanly inside containers */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-3) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* Code-like values (session IDs, join codes, CV numbers) */
+.mono { font-family: var(--font-mono); }
+
+/* Tables scroll horizontally inside their container instead of breaking layout */
+.table-scroll { overflow-x: auto; }
+
+/* One consistent loading spinner (always paired with a text label) */
+.spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--surface-3);
+  border-top-color: var(--info);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -2px;
+  margin-right: var(--sp-2);
+}
+@keyframes spin { to { transform: rotate(360deg); } }

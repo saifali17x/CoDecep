@@ -1,11 +1,12 @@
-/* Shared dark theme for auth + portal + class pages.
-   Palette matches the IDE/Dashboard (GitHub-dark). */
+/* Shared theme for auth + portal + class pages. All values come from the
+   design tokens in src/theme.css (Session 18). UI text = sans; monospace is
+   reserved for code-like values (join codes, session IDs, metric numbers). */
 
 .portal {
   min-height: 100vh;
-  background: #0d1117;
-  color: #e6edf3;
-  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
   box-sizing: border-box;
 }
 
@@ -15,32 +16,35 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0d1117;
-  padding: 24px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  padding: var(--sp-5);
   box-sizing: border-box;
 }
 
 .auth-card {
   width: 100%;
   max-width: 360px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  padding: 28px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 28px var(--sp-5);
 }
 
 .auth-title {
-  margin: 0 0 4px;
-  font-size: 18px;
-  color: #e6edf3;
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-xl);
+  color: var(--text);
+  font-family: var(--font-mono); /* brand wordmark stays code-flavored */
 }
 .auth-sub {
   margin: 0 0 20px;
-  font-size: 12px;
-  color: #6e7681;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
 }
 
-/* ── Forms ───────────────────────────────────────────────────────────────── */
+/* ── Forms — one field style everywhere ──────────────────────────────────── */
 .field {
   display: flex;
   flex-direction: column;
@@ -48,187 +52,217 @@
   margin-bottom: 14px;
 }
 .field label {
-  font-size: 12px;
-  color: #8b949e;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
 }
 .field input,
 .field select {
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  color: #e6edf3;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
   padding: 9px 10px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
   outline: none;
+  transition: border-color var(--transition);
 }
 .field input:focus,
 .field select:focus {
-  border-color: #388bfd;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.25);
+}
+.field input:disabled,
+.field select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* error state: red border + message (message = .field-error below) */
+.field input[aria-invalid="true"],
+.field.invalid input {
+  border-color: var(--danger);
 }
 
+/* ── Buttons — primary / secondary / ghost ───────────────────────────────── */
 .btn {
-  background: #238636;
+  background: var(--primary);
   border: 1px solid rgba(240, 246, 252, 0.1);
   color: #fff;
   padding: 9px 14px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background var(--transition), border-color var(--transition);
 }
-.btn:hover { background: #2ea043; }
-.btn:disabled { opacity: 0.55; cursor: default; }
+.btn:hover { background: var(--primary-hover); }
+.btn:active { background: var(--primary); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-secondary {
-  background: #21262d;
-  color: #c9d1d9;
-  border: 1px solid #30363d;
+  background: var(--surface-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
 }
-.btn-secondary:hover { background: #30363d; }
+.btn-secondary:hover { background: var(--surface-3); }
+.btn-secondary:active { background: var(--surface-2); }
+
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.btn-danger:hover { background: rgba(248, 81, 73, 0.12); }
 
 .btn-block { width: 100%; }
 
+/* ghost / inline action */
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--link);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  padding: 0;
+  transition: color var(--transition);
+}
+.link-btn:hover { text-decoration: underline; }
+
 .form-error {
-  color: #f85149;
-  font-size: 12px;
-  margin: 4px 0 12px;
+  color: var(--danger);
+  font-size: var(--fs-sm);
+  margin: var(--sp-1) 0 var(--sp-3);
   min-height: 14px;
 }
 
 /* Inline field hints / errors + password strength meter (Session 15) */
-.field-hint { margin: 0; font-size: 11px; color: #6e7681; }
-.field-error { margin: 0; font-size: 11px; color: #f85149; }
-.pw-meter { display: flex; align-items: center; gap: 8px; }
+.field-hint { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.field-error { margin: 0; font-size: var(--fs-xs); color: var(--danger); }
+.pw-meter { display: flex; align-items: center; gap: var(--sp-2); }
 .pw-meter-track {
   flex: 1;
   height: 5px;
-  background: #21262d;
+  background: var(--surface-2);
   border-radius: 3px;
   overflow: hidden;
 }
 .pw-meter-bar {
   height: 100%;
   border-radius: 3px;
-  transition: width 0.15s ease, background 0.15s ease;
+  transition: width var(--transition), background var(--transition);
 }
-.pw-meter-label { font-size: 11px; min-width: 44px; text-align: right; }
+.pw-meter-label { font-size: var(--fs-xs); min-width: 44px; text-align: right; }
 
 /* ── App shell nav (Session 16) ──────────────────────────────────────────── */
-.shell-left { display: flex; align-items: center; gap: 20px; }
-.shell-left .portal-brand { text-decoration: none; color: #c9d1d9; }
-.shell-nav { display: flex; gap: 4px; }
-.shell-link {
-  color: #8b949e;
-  text-decoration: none;
-  font-size: 13px;
-  padding: 5px 10px;
-  border-radius: 6px;
-}
-.shell-link:hover { color: #e6edf3; background: #21262d; }
-.shell-link.active { color: #e6edf3; background: #21262d; }
-
-/* ── Instructor session discovery (Session 16) ───────────────────────────── */
-.sessions-row td {
-  background: #0d1117;
-  border-bottom: 1px solid #21262d;
-  padding: 10px 14px;
-}
-.session-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.session-table th {
-  text-align: left; color: #6e7681; font-weight: 400;
-  padding: 4px 8px; border-bottom: 1px solid #21262d;
-}
-.session-table td { padding: 6px 8px; border-bottom: 1px solid #161b22; }
-.flag-pill {
-  display: inline-block; min-width: 20px; text-align: center;
-  font-size: 11px; padding: 1px 6px; border-radius: 10px;
-  border: 1px solid #30363d;
-}
-.flag-pill.flagged { color: #f59e0b; border-color: #f59e0b55; }
-.flag-pill.clear { color: #3fb950; border-color: #3fb95055; }
-.flag-pill.pending { color: #6e7681; }
-.status-pill {
-  font-size: 10px; padding: 2px 7px; border-radius: 10px;
-  border: 1px solid #30363d;
-}
-.status-pill.done { color: #3fb950; }
-.status-pill.active { color: #79c0ff; }
-
-/* Student submitted badge + join-code copy (Session 16) */
-.row-actions { display: inline-flex; align-items: center; gap: 10px; }
-.submitted-badge {
-  font-size: 10px; padding: 2px 7px; border-radius: 10px;
-  border: 1px solid #3fb95055; color: #3fb950;
-}
-.join-code-row { display: inline-flex; align-items: center; gap: 8px; }
-.copy-btn { font-size: 12px; }
-
-.auth-alt {
-  margin-top: 16px;
-  font-size: 12px;
-  color: #6e7681;
-  text-align: center;
-}
-.auth-alt a { color: #79c0ff; text-decoration: none; }
-.auth-alt a:hover { text-decoration: underline; }
-
-/* ── Portal / class header ───────────────────────────────────────────────── */
 .portal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #30363d;
-  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-3) var(--sp-5);
+  min-height: 56px;
+  box-sizing: border-box;
 }
-.portal-brand { font-size: 14px; font-weight: 600; color: #c9d1d9; }
-.portal-user { font-size: 12px; color: #8b949e; display: flex; align-items: center; gap: 14px; }
-.portal-user .role-pill {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 10px;
-  background: #21262d;
-  border: 1px solid #30363d;
-  color: #79c0ff;
-}
-
-.portal-body { padding: 24px; max-width: 900px; margin: 0 auto; }
-
-.section { margin-bottom: 28px; }
-.section h2 {
-  font-size: 13px;
+.portal-brand {
+  font-size: var(--fs-lg);
   font-weight: 600;
-  color: #8b949e;
-  margin: 0 0 12px;
+  color: var(--text-2);
+  font-family: var(--font-mono); /* brand wordmark */
+}
+.shell-left { display: flex; align-items: center; gap: 20px; }
+.shell-left .portal-brand { text-decoration: none; }
+.shell-nav { display: flex; gap: var(--sp-1); }
+.shell-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: var(--fs-md);
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  transition: color var(--transition), background var(--transition);
+}
+.shell-link:hover { color: var(--text); background: var(--surface-2); }
+.shell-link.active { color: var(--text); background: var(--surface-2); }
+
+.portal-user {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/* ── Pills — ONE shape for every badge in the app ────────────────────────── */
+.role-pill,
+.type-pill,
+.status-pill,
+.submitted-badge,
+.flag-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.role-pill { background: var(--surface-2); color: var(--link); }
+.type-pill.LIVE_LAB { color: var(--warning-alt); border-color: rgba(245, 158, 11, 0.4); }
+.type-pill.ASSESSMENT { color: var(--link); border-color: rgba(121, 192, 255, 0.4); }
+.status-pill.done { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
+.status-pill.active { color: var(--link); border-color: rgba(121, 192, 255, 0.4); }
+.submitted-badge { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
+.flag-pill.flagged { color: var(--warning-alt); border-color: rgba(245, 158, 11, 0.4); }
+.flag-pill.clear { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
+.flag-pill.pending { color: var(--text-muted); }
+
+/* ── Page body / sections ────────────────────────────────────────────────── */
+.portal-body { padding: var(--sp-5); max-width: 960px; margin: 0 auto; }
+
+.section { margin-bottom: var(--sp-6); }
+.section h2 {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 var(--sp-3);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 /* Inline create/join form row */
-.inline-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.inline-form { display: flex; gap: var(--sp-2); align-items: flex-end; flex-wrap: wrap; }
 .inline-form .field { margin-bottom: 0; }
 
 /* ── Cards / lists ───────────────────────────────────────────────────────── */
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--sp-3); }
 
 .card {
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
+  transition: border-color var(--transition);
 }
-.card-title { font-size: 14px; color: #e6edf3; font-weight: 600; }
-.card-meta { font-size: 11px; color: #6e7681; }
+.card-title {
+  font-size: var(--fs-lg);
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-meta { font-size: var(--fs-xs); color: var(--text-muted); }
 
 .join-code {
-  font-size: 12px;
-  color: #79c0ff;
-  background: #0d1117;
-  border: 1px solid #30363d;
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  color: var(--link);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 5px;
   padding: 3px 8px;
   display: inline-block;
@@ -236,87 +270,166 @@
   cursor: pointer;
   user-select: all;
 }
+.card .join-code, .card .join-code-row { align-self: flex-start; }
+.join-code-row { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.copy-btn { font-size: var(--fs-sm); }
 
-.empty-note { color: #6e7681; font-size: 12px; }
-
-/* Assignment table */
-.assign-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.assign-table th {
-  text-align: left; color: #6e7681; font-weight: 400;
-  padding: 6px 10px; border-bottom: 1px solid #21262d;
+/* ── Empty / loading / error states — intentional, not raw text ──────────── */
+.empty-note {
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  text-align: center;
+  padding: var(--sp-5) var(--sp-4);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  margin: 0;
 }
-.assign-table td { padding: 8px 10px; border-bottom: 1px solid #161b22; }
-.type-pill {
-  font-size: 10px; padding: 2px 7px; border-radius: 10px;
-  border: 1px solid #30363d;
-}
-.type-pill.LIVE_LAB { color: #f59e0b; }
-.type-pill.ASSESSMENT { color: #79c0ff; }
+/* compact variant when embedded inside a table row */
+.sessions-row .empty-note { padding: var(--sp-3); border: none; background: transparent; text-align: left; }
 
-/* Exam page top strip */
+/* ── Tables — one header/row style everywhere ────────────────────────────── */
+.assign-table,
+.session-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-md);
+}
+.assign-table th,
+.session-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.assign-table td,
+.session-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--surface);
+}
+.assign-table > tbody > tr:hover > td { background: rgba(33, 38, 45, 0.5); }
+.session-table { font-size: var(--fs-sm); }
+
+.sessions-row td {
+  background: var(--bg);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px 14px;
+}
+.row-actions { display: inline-flex; align-items: center; gap: 10px; }
+
+/* Session 17 — severity-colored metric cells (values are code-like → mono) */
+.sev-cell { font-size: var(--fs-xs); white-space: nowrap; font-family: var(--font-mono); }
+
+/* ── Exam page ───────────────────────────────────────────────────────────── */
 .exam-strip {
-  display: flex; align-items: center; gap: 16px;
-  background: #161b22; border-bottom: 1px solid #30363d;
-  padding: 8px 14px; color: #e6edf3; font-size: 13px;
-  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-2) 14px;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-family: var(--font-ui);
 }
 .exam-strip .exam-title { font-weight: 600; }
 .exam-loading {
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
-  background: #0d1117; color: #8b949e;
-  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
 }
 
 /* Dashboard assignment filter banner */
 .dash-filter {
-  background: #161b22; border-bottom: 1px solid #30363d;
-  color: #79c0ff; font-size: 12px; padding: 8px 16px;
-  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--link);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-4);
+  font-family: var(--font-ui);
 }
-
-.link-btn {
-  background: none; border: none; color: #79c0ff; cursor: pointer;
-  font-family: inherit; font-size: 13px; padding: 0;
-}
-.link-btn:hover { text-decoration: underline; }
 
 /* ── Syllabus allowlist preview (Phase 6) ────────────────────────────────── */
-.allowlist-warning {
-  color: #f59e0b; font-size: 12px; margin: 12px 0 0;
-}
+.allowlist-warning { color: var(--warning-alt); font-size: var(--fs-sm); margin: var(--sp-3) 0 0; }
 .allowlist-preview {
-  margin-top: 16px;
-  background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+  margin-top: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   padding: 14px;
 }
-.allowlist-note { color: #f59e0b; font-size: 12px; margin: 0 0 12px; }
-.allowlist-week { margin-bottom: 8px; }
+.allowlist-note { color: var(--warning-alt); font-size: var(--fs-sm); margin: 0 0 var(--sp-3); }
+.allowlist-week { margin-bottom: var(--sp-2); }
 .allowlist-week summary {
-  cursor: pointer; font-size: 13px; color: #e6edf3; font-weight: 600;
-  padding: 4px 0; user-select: none;
+  cursor: pointer;
+  font-size: var(--fs-md);
+  color: var(--text);
+  font-weight: 600;
+  padding: var(--sp-1) 0;
+  user-select: none;
 }
-.allowlist-count { color: #6e7681; font-weight: 400; font-size: 11px; }
+.allowlist-count { color: var(--text-muted); font-weight: 400; font-size: var(--fs-xs); }
 .chip-list {
-  display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0 4px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: var(--sp-2) 0 var(--sp-1) 14px;
   align-items: center;
 }
 .chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  background: #0d1117; border: 1px solid #30363d; border-radius: 12px;
-  padding: 2px 8px; font-size: 11px; color: #c9d1d9;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono); /* AST node types are code-like */
+  color: var(--text-2);
 }
 .chip-x {
-  background: none; border: none; color: #6e7681; cursor: pointer;
-  font-size: 13px; padding: 0; line-height: 1; font-family: inherit;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-md);
+  padding: 0;
+  line-height: 1;
+  font-family: inherit;
+  transition: color var(--transition);
 }
-.chip-x:hover { color: #f85149; }
+.chip-x:hover { color: var(--danger); }
 .chip-add { display: inline-flex; align-items: center; gap: 6px; }
 .chip-add input {
-  background: #0d1117; border: 1px solid #30363d; border-radius: 12px;
-  color: #e6edf3; padding: 2px 8px; font-size: 11px; font-family: inherit;
-  width: 130px; outline: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--text);
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  width: 130px;
+  outline: none;
+  transition: border-color var(--transition);
 }
-.chip-add input:focus { border-color: #388bfd; }
+.chip-add input:focus { border-color: var(--accent); }
+
+.auth-alt {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  text-align: center;
+}
+.auth-alt a { color: var(--link); text-decoration: none; }
+.auth-alt a:hover { text-decoration: underline; }
 
 /* ── Exam PDF split-pane (Phase 1) ───────────────────────────────────────── */
 .exam-layout {
@@ -333,7 +446,7 @@
 .exam-split-left {
   width: 35%;
   min-width: 0;
-  border-right: 1px solid #30363d;
+  border-right: 1px solid var(--border);
 }
 .exam-split-right {
   width: 65%;
@@ -341,15 +454,19 @@
 }
 /* The IDE is sized for a full viewport; inside the split it fills its pane. */
 .exam-split-right .app { height: 100%; }
-.pdf-pane { height: 100%; background: #0d1117; }
+.pdf-pane { height: 100%; background: var(--bg); }
 .pdf-pane-msg {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #8b949e;
-  font-size: 13px;
-  font-family: "Cascadia Code", ui-monospace, Consolas, monospace;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  font-family: var(--font-ui);
 }
-
-/* Session 17 — severity-colored metric cells in the session table */
-.sev-cell { font-size: 11px; white-space: nowrap; }
+/* Responsive sanity: on narrow screens the split stacks (PDF above IDE)
+   rather than squeezing both panes unreadably. */
+@media (max-width: 900px) {
+  .exam-split { flex-direction: column; }
+  .exam-split-left { width: 100%; height: 38%; border-right: none; border-bottom: 1px solid var(--border); }
+  .exam-split-right { width: 100%; flex: 1; min-height: 0; }
+}

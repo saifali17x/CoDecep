@@ -1,11 +1,13 @@
 /* Session 17 — grid-first live monitoring dashboard (demo centerpiece).
+   Tokenized in Session 18 — values from src/theme.css.
    Tile states: calm (neutral) → violating (red, pulsing) → had-violations
    (amber; still flagged, no longer pulsing). RED = "flagged for review". */
 
 .monitor-body {
-  padding: 20px 24px;
+  padding: 20px var(--sp-5);
   max-width: 1400px;
   margin: 0 auto;
+  font-family: var(--font-ui);
 }
 
 .monitor-controls {
@@ -24,16 +26,16 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  color: #8b949e;
-  font-size: 13px;
-  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
+  margin-bottom: var(--sp-2);
 }
 @media (max-width: 1100px) {
   .monitor-main { flex-direction: column; }
   .monitor-main.with-dvr .tile-grid { flex: 1; }
 }
 
-/* ── The grid ────────────────────────────────────────────────────────────── */
+/* ── The grid (reflows via auto-fill on narrower widths) ─────────────────── */
 .tile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
@@ -44,22 +46,22 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px;
-  border-radius: 8px;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
   text-align: left;
   font-family: inherit;
-  background: #161b22;
-  border: 1px solid #30363d;
-  color: #c9d1d9;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-2);
   transition: background 0.4s ease, border-color 0.4s ease, box-shadow 0.4s ease;
 }
 .student-tile.clickable { cursor: pointer; }
-.student-tile.clickable:hover { border-color: #388bfd; }
-.student-tile:disabled { opacity: 0.55; cursor: default; }
+.student-tile.clickable:hover { border-color: var(--accent); }
+.student-tile:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .student-tile.violating {
   background: #3d1418;
-  border-color: #f85149;
+  border-color: var(--danger);
   animation: tile-pulse 1.2s ease-in-out infinite;
 }
 @keyframes tile-pulse {
@@ -69,20 +71,20 @@
 
 .student-tile.had-violations {
   background: #2b2111;
-  border-color: #d29922;
+  border-color: var(--warning);
   animation: none;
 }
 
-.tile-top { display: flex; align-items: center; gap: 8px; }
+.tile-top { display: flex; align-items: center; gap: var(--sp-2); }
 .tile-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text);
 }
 
 .status-dot {
@@ -91,26 +93,27 @@
   border-radius: 50%;
   flex: none;
 }
-.status-dot.not_started { background: #6e7681; }
-.status-dot.in_progress { background: #3fb950; }
-.status-dot.submitted   { background: #58a6ff; }
+.status-dot.not_started { background: var(--text-muted); }
+.status-dot.in_progress { background: var(--success); }
+.status-dot.submitted   { background: var(--info); }
 
 .alert-count {
   flex: none;
   min-width: 20px;
   text-align: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
+  font-family: var(--font-mono);
   padding: 1px 6px;
-  border-radius: 10px;
-  background: #f85149;
+  border-radius: var(--r-pill);
+  background: var(--danger);
   color: #fff;
 }
-.student-tile.had-violations .alert-count { background: #d29922; color: #1c1c1c; }
+.student-tile.had-violations .alert-count { background: var(--warning); color: #1c1c1c; }
 
 .tile-sub {
-  font-size: 11px;
-  color: #8b949e;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -118,13 +121,14 @@
 .student-tile.violating .tile-sub { color: #ffa198; }
 .student-tile.had-violations .tile-sub { color: #e3b341; }
 
-/* ── Secondary raw alert log ─────────────────────────────────────────────── */
-.alert-log { margin-top: 24px; }
+/* ── Secondary raw alert log (scrolls inside its container) ──────────────── */
+.alert-log { margin-top: var(--sp-5); }
 .alert-log summary {
   cursor: pointer;
-  color: #8b949e;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--fs-md);
   user-select: none;
   padding: 6px 0;
 }
-.alert-log .dash-table { margin-top: 8px; }
+.alert-log .table-scroll { max-height: 320px; overflow-y: auto; }
+.alert-log .dash-table { margin-top: var(--sp-2); }

@@ -126,7 +126,7 @@ export default function PortalPage() {
         <div className="section">
           <h2>Your classes</h2>
           {loading ? (
-            <p className="empty-note">Loading classes…</p>
+            <p className="empty-note"><span className="spinner" aria-hidden="true" />Loading classes…</p>
           ) : classes.length === 0 ? (
             <p className="empty-note">
               {isInstructor

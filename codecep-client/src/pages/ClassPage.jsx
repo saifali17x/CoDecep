@@ -206,7 +206,7 @@ export default function ClassPage() {
     return (
       <AppShell>
         <div className="portal-body">
-          <p className="empty-note">Loading class…</p>
+          <p className="empty-note"><span className="spinner" aria-hidden="true" />Loading class…</p>
         </div>
       </AppShell>
     );
@@ -346,6 +346,7 @@ export default function ClassPage() {
                 : "No assignments yet — check back later."}
             </p>
           ) : (
+            <div className="table-scroll">
             <table className="assign-table">
               <thead>
                 <tr>
@@ -384,7 +385,7 @@ export default function ClassPage() {
                       <tr key={`${a.id}-sessions`} className="sessions-row">
                         <td colSpan={5}>
                           {sessionsLoading ? (
-                            <p className="empty-note">Loading sessions…</p>
+                            <p className="empty-note"><span className="spinner" aria-hidden="true" />Loading sessions…</p>
                           ) : sessionsError ? (
                             <p className="form-error">
                               {sessionsError}{" "}
@@ -468,6 +469,7 @@ export default function ClassPage() {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 

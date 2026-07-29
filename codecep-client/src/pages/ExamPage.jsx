@@ -65,7 +65,11 @@ export default function ExamPage() {
   }
 
   if (!assignment || !sessionId) {
-    return <div className="exam-loading">Loading exam…</div>;
+    return (
+      <div className="exam-loading">
+        <span className="spinner" aria-hidden="true" />Loading exam…
+      </div>
+    );
   }
 
   // The IDE render is identical in both layouts — the PDF split only WRAPS it.

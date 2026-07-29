@@ -1,9 +1,12 @@
+/* DVR playback panel. Tokenized in Session 18 — values from src/theme.css. */
+
 .dvr-panel {
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
   box-sizing: border-box;
+  font-family: var(--font-ui);
 }
 
 .dvr-header {
@@ -11,29 +14,35 @@
   align-items: center;
   gap: 10px;
   padding-bottom: 10px;
-  border-bottom: 1px solid #21262d;
+  border-bottom: 1px solid var(--border-subtle);
   margin-bottom: 10px;
 }
 
 .dvr-student {
-  color: #79c0ff;
-  font-size: 13px;
+  color: var(--link);
+  font-size: var(--fs-md);
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dvr-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
+  font-size: 10px;
   font-weight: 600;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  white-space: nowrap;
 }
-.dvr-badge.in-progress { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
-.dvr-badge.submitted   { background: rgba(139, 148, 158, 0.15); color: #8b949e; }
+.dvr-badge.in-progress { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
+.dvr-badge.submitted   { color: var(--text-secondary); }
 
 .dvr-count {
-  color: #6e7681;
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
   margin-left: auto;
+  white-space: nowrap;
 }
 
 .dvr-forensics {
@@ -43,44 +52,45 @@
   margin-bottom: 10px;
 }
 
+/* Severity pills: color comes inline from lib/metricColors.js LEVEL_COLORS
+   (which the theme tokens match); shape is the shared pill. */
 .dvr-pill {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 3px 9px;
-  border-radius: 10px;
-  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--bg);
 }
-.dvr-pill.clear   { background: rgba(63, 185, 80, 0.12);  color: #3fb950; border-color: rgba(63, 185, 80, 0.3); }
-.dvr-pill.flagged { background: rgba(210, 153, 34, 0.12); color: #d29922; border-color: rgba(210, 153, 34, 0.35); }
-.dvr-pill.pending { background: rgba(139, 148, 158, 0.1); color: #8b949e; border-color: rgba(139, 148, 158, 0.25); }
+.dvr-pill.pending { color: var(--text-secondary); }
 
 .dvr-scrubber { margin-bottom: 10px; }
 
 .dvr-scrubber input[type="range"] {
   width: 100%;
-  accent-color: #58a6ff;
+  accent-color: var(--info);
   cursor: pointer;
 }
 
 .dvr-scrub-label {
-  color: #8b949e;
-  font-size: 12px;
-  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  margin-top: var(--sp-1);
 }
 
 .dvr-empty {
-  color: #6e7681;
-  font-size: 13px;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
   text-align: center;
   padding: 30px 10px;
 }
 
-.dvr-error { color: #f85149; }
+.dvr-error { color: var(--danger); }
 
 /* Session 17 — severity note under the colored pills */
 .dvr-severity-note {
   display: block;
   width: 100%;
   font-size: 10px;
-  color: #6e7681;
+  color: var(--text-muted);
   margin-top: 2px;
 }

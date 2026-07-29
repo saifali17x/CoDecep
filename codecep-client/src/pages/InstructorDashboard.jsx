@@ -193,7 +193,7 @@ export default function InstructorDashboard() {
         {!assignmentId ? (
           <p className="empty-note">Select an assignment above to monitor its exam roster.</p>
         ) : rosterLoading ? (
-          <p className="empty-note">Loading roster…</p>
+          <p className="empty-note"><span className="spinner" aria-hidden="true" />Loading roster…</p>
         ) : roster && roster.length === 0 ? (
           <p className="empty-note">No students in this class yet.</p>
         ) : roster ? (
@@ -251,6 +251,7 @@ export default function InstructorDashboard() {
           {alerts.length === 0 ? (
             <p className="empty-note">No alerts yet — waiting for student activity…</p>
           ) : (
+            <div className="table-scroll">
             <table className="dash-table">
               <thead>
                 <tr>
@@ -280,6 +281,7 @@ export default function InstructorDashboard() {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </details>
       </div>

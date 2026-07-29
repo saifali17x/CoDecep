@@ -86,7 +86,7 @@ export default function DvrPlayer({ sessionId }) {
   if (loading) {
     return (
       <div className="dvr-panel">
-        <div className="dvr-empty">Loading session…</div>
+        <div className="dvr-empty"><span className="spinner" aria-hidden="true" />Loading session…</div>
       </div>
     );
   }
