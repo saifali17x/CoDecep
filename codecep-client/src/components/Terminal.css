@@ -1,127 +1,143 @@
-.terminal-pane {
+/* ── Execution console (Session 21, xterm.js) ─────────────────────────────────
+   Bottom of the exam right-pane: xterm output on the left, batch stdin on the
+   right. Tokenized to match the rest of the app. */
+
+.console-pane {
   display: flex;
   flex-direction: column;
-  height: 180px;
-  min-height: 100px;
-  background: #1e1e1e;
-  border-top: 1px solid #3c3c3c;
+  height: 34%;
+  min-height: 150px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
   flex-shrink: 0;
+  font-family: var(--font-ui);
 }
 
-.terminal-tab-bar {
-  display: flex;
-  background: #2d2d2d;
-  border-bottom: 1px solid #3c3c3c;
-  flex-shrink: 0;
-}
-
-.terminal-tab {
-  padding: 0 14px;
-  height: 32px;
+.console-bar {
   display: flex;
   align-items: center;
-  font-size: 12px;
-  color: #969696;
-  cursor: pointer;
+  gap: var(--sp-3);
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 var(--sp-3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   user-select: none;
-  transition: color 0.1s;
 }
 
-.terminal-tab.active {
-  color: #d4d4d4;
-  border-bottom: 2px solid #c084fc;
+.console-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
 }
 
-.terminal-tab:not(.active):hover {
-  color: #d4d4d4;
-}
-
-.terminal-body {
+.console-run-status {
   flex: 1;
-  padding: 8px 12px;
-  font-family: ui-monospace, Consolas, "Courier New", monospace;
-  font-size: 13px;
-  overflow-y: auto;
-  color: #d4d4d4;
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.console-run-status.is-running { color: var(--info); }
+
+.console-clear {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  border-radius: var(--r-sm);
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.console-clear:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.console-clear:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.console-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
-.terminal-line {
+.console-xterm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 0 0 8px;
+}
+/* xterm sizes itself to the host; keep its own scrollbar slim (theme.css). */
+.console-xterm .xterm { height: 100%; }
+
+.console-stdin {
+  width: 250px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.console-stdin-label {
   display: flex;
   align-items: center;
+  gap: 6px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
-.terminal-prompt {
-  color: #c084fc;
+.console-hint {
+  color: var(--info);
+  cursor: help;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
-.terminal-separator {
-  color: #858585;
+.console-stdin-box {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  padding: 6px 8px;
+  outline: none;
+  transition: border-color var(--transition);
 }
+.console-stdin-box:focus { border-color: var(--accent); }
+.console-stdin-box:disabled { opacity: 0.5; cursor: not-allowed; }
+.console-stdin-box::placeholder { color: var(--text-muted); }
 
-.terminal-cursor {
-  display: inline-block;
-  width: 7px;
-  height: 14px;
-  background: #d4d4d4;
-  animation: blink 1.2s step-end infinite;
-  vertical-align: middle;
-}
-
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
-}
-
-.terminal-chunk {
-  margin-bottom: 8px;
-}
-
-.terminal-chunk-header {
-  color: #c084fc;
-  margin-bottom: 2px;
-}
-
-.terminal-event {
-  padding-left: 12px;
-  line-height: 1.6;
-  white-space: pre;
-}
-
-.terminal-dim {
-  color: #666;
-}
-
-.terminal-status {
-  padding: 2px 0;
-  font-size: 12px;
-}
-
-.terminal-status--ok {
-  color: #4ec9b0;
-}
-
-.terminal-status--err {
-  color: #f48771;
-}
-
-.terminal-output {
-  margin-top: 6px;
-}
-
-.terminal-output-header {
-  color: #569cd6;
-  font-size: 11px;
-  margin-bottom: 2px;
-}
-
-.terminal-output-body {
+.console-stdin-note {
   margin: 0;
-  padding: 6px 10px;
-  background: #0d0d0d;
-  border-left: 2px solid #569cd6;
-  color: #d4d4d4;
-  font-size: 12px;
-  font-family: inherit;
-  white-space: pre-wrap;
-  word-break: break-word;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Narrow layout: stdin drops below the output instead of squeezing it. The pane
+   also grows a little so the input box stays usable rather than a sliver. */
+@media (max-width: 900px) {
+  .console-pane { height: 44%; min-height: 230px; }
+  .console-body { flex-direction: column; }
+  .console-stdin {
+    width: 100%;
+    height: auto;
+    flex-shrink: 0;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+  .console-stdin-box { flex: 0 0 auto; height: 52px; min-height: 52px; }
 }

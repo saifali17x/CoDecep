@@ -1,52 +1,90 @@
+/* ── Exam top strip (Session 21) — tokenized, single unified strip ────────── */
 .top-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-4);
   height: 44px;
-  background: #323233;
-  border-bottom: 1px solid #3c3c3c;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   user-select: none;
+  font-family: var(--font-ui);
+}
+
+.top-bar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
 }
 
 .top-bar-logo {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   letter-spacing: 1.5px;
   text-transform: uppercase;
   color: #c084fc;
+  white-space: nowrap;
 }
+
+.top-bar-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Lab-mode badge — same pill shape as every other badge in the app. */
+.top-bar-mode {
+  font-size: var(--fs-xs);
+  border-radius: var(--r-pill);
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.top-bar-mode.LIVE_LAB { color: var(--warning); border-color: var(--warning); }
+.top-bar-mode.ASSESSMENT { color: var(--info); border-color: var(--info); }
 
 .top-bar-actions {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: var(--sp-2);
 }
 
 .btn {
   padding: 5px 16px;
-  border-radius: 4px;
-  font-size: 13px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-md);
+  font-family: var(--font-ui);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background var(--transition), opacity var(--transition);
   outline: none;
 }
 
 .btn:focus-visible {
-  outline: 2px solid #c084fc;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
+.btn-back,
 .btn-run {
-  background: #3a3a3a;
-  color: #d4d4d4;
-  border: 1px solid #555;
+  background: var(--surface-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
 }
+.btn-back { padding: 4px 10px; font-size: var(--fs-sm); }
 
-.btn-run:hover {
-  background: #484848;
-  border-color: #777;
+.btn-back:hover:not(:disabled),
+.btn-run:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
 }
 
 .btn-submit {
@@ -56,7 +94,7 @@
   font-weight: 600;
 }
 
-.btn-submit:hover {
+.btn-submit:hover:not(:disabled) {
   opacity: 0.88;
 }
 
@@ -65,18 +103,13 @@
   cursor: not-allowed;
 }
 
-.lang-select {
-  background: #3a3a3a;
-  color: #d4d4d4;
-  border: 1px solid #555;
-  border-radius: 4px;
-  padding: 5px 10px;
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-  outline: none;
-}
-
-.lang-select:focus {
-  border-color: #c084fc;
+/* C++-only scope: a static label, not a dropdown. */
+.lang-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 4px 10px;
+  background: var(--surface-2);
 }

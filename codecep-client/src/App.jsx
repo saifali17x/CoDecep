@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import TopBar from "./components/TopBar";
-import Sidebar from "./components/Sidebar";
 import EditorPane from "./components/EditorPane";
 import Terminal from "./components/Terminal";
 import StatusBar from "./components/StatusBar";
+import PdfPane from "./components/PdfPane";
 import socket from "./socket";
 import { debugLog } from "./debug";
 import "./App.css";
@@ -25,6 +25,16 @@ int main() {
 
 const STUDENT_ID = "student-001";
 
+// Session 21 — draggable PDF/editor split. Percent of the workspace given to
+// the PDF pane, clamped so neither side becomes unusable.
+const PDF_DEFAULT_PCT = 40;
+const PDF_MIN_PCT = 25;
+const PDF_MAX_PCT = 60;
+
+// The tool is scoped to C++ only (see TopBar): sandboxed Judge0 execution
+// reliably supports self-contained C++ programs.
+const LANGUAGE = "cpp";
+
 function App({
   sessionId: sessionIdProp,
   userId,
@@ -32,6 +42,11 @@ function App({
   labMode: labModeProp,
   studentId: studentIdProp,
   initialStatus: initialStatusProp,
+  // Exam-shell props (Session 21): ExamPage passes these so the exam has ONE
+  // top strip instead of a separate back-strip above the IDE.
+  assignmentTitle,
+  onBack,
+  hasPdf = false,
 } = {}) {
   // Effective values: props (real identity from ExamPage) fall back to the
   // hardcoded module consts so the propless /legacy dev flow is unchanged.
@@ -43,9 +58,7 @@ function App({
   const INITIAL_STATUS = initialStatusProp ?? "IN_PROGRESS";
 
   const [code, setCode] = useState(DEFAULT_CODE);
-  const [language, setLanguage] = useState("cpp");
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
-  const [terminalLines, setTerminalLines] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [sessionStatus, setSessionStatus] = useState(INITIAL_STATUS);
   const [sessionId, setSessionId] = useState(null);
@@ -53,6 +66,17 @@ function App({
   const [submitOutcome, setSubmitOutcome] = useState(
     INITIAL_STATUS === "SUBMITTED" ? "ALREADY_SUBMITTED" : null,
   );
+
+  // Execution console state (Session 21). `consoleEvents` holds ONLY
+  // execution output — program stdout/stderr, compiler messages, run status.
+  // Telemetry flush traces are deliberately NOT piped here any more.
+  const [consoleEvents, setConsoleEvents] = useState([]);
+  const [stdin, setStdin] = useState("");
+
+  // Split width (session-local; no need to persist across reloads).
+  const [pdfPct, setPdfPct] = useState(PDF_DEFAULT_PCT);
+  const workspaceRef = useRef(null);
+  const draggingRef = useRef(false);
 
   // Refs mirror state so the stale closure inside EditorPane's setInterval
   // always reads the CURRENT value, not the value frozen at mount.
@@ -133,6 +157,41 @@ function App({
       );
   }, []);
 
+  // ── Draggable divider ─────────────────────────────────────────────────────
+  const handleDividerMove = useCallback((clientX) => {
+    const el = workspaceRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const pct = ((clientX - rect.left) / rect.width) * 100;
+    setPdfPct(Math.min(PDF_MAX_PCT, Math.max(PDF_MIN_PCT, pct)));
+  }, []);
+
+  useEffect(() => {
+    function onMove(e) {
+      if (!draggingRef.current) return;
+      e.preventDefault();
+      handleDividerMove(e.clientX);
+    }
+    function onUp() {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      document.body.classList.remove("is-splitting");
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [handleDividerMove]);
+
+  function startDrag(e) {
+    e.preventDefault();
+    draggingRef.current = true;
+    document.body.classList.add("is-splitting");
+  }
+
   function handleSubmit() {
     setSessionStatus("SUBMITTED");
     sessionStatusRef.current = "SUBMITTED"; // ← disarm the flush immediately
@@ -171,14 +230,6 @@ function App({
       engagedTimeRef.current +
       (focusStartRef.current !== null ? Date.now() - focusStartRef.current : 0);
 
-    setTerminalLines((prev) => {
-      const chunkNum = prev.filter((l) => l.kind === "chunk").length + 1;
-      return [
-        ...prev,
-        { kind: "chunk", chunkNum, flushedAt: Date.now(), events: chunk },
-      ];
-    });
-
     try {
       const res = await fetch("http://localhost:3001/api/telemetry/submit", {
         method: "POST",
@@ -192,99 +243,151 @@ function App({
         }),
       });
       const data = await res.json();
+      // Flush results are DEBUG-ONLY — they must never reach the student's
+      // console (that leakage was the old terminal's problem).
       if (res.status === 202) {
-        setTerminalLines((prev) => [
-          ...prev,
-          {
-            kind: "status",
-            message: `Sent ${data.accepted} event(s) to server — 202 Accepted`,
-            ok: true,
-          },
-        ]);
+        debugLog(`[FLUSH] ${data.accepted} event(s) accepted — 202`);
       } else {
-        setTerminalLines((prev) => [
-          ...prev,
-          {
-            kind: "status",
-            message: `Server rejected payload — HTTP ${res.status}`,
-            ok: false,
-          },
-        ]);
+        debugLog(`[FLUSH] server rejected payload — HTTP ${res.status}`);
       }
     } catch (err) {
-      setTerminalLines((prev) => [
-        ...prev,
-        {
-          kind: "status",
-          message: `Network error — ${err.message}`,
-          ok: false,
-        },
-      ]);
+      debugLog(`[FLUSH] network error — ${err.message}`);
     }
+  }
+
+  function pushConsole(entries) {
+    setConsoleEvents((prev) => [...prev, ...entries]);
   }
 
   async function handleRun() {
     setIsRunning(true);
+    // Clear-on-run so repeated runs stay readable.
+    setConsoleEvents([
+      { kind: "cmd", text: "$ g++ main.cpp -o main && ./main" },
+      ...(stdin.trim().length > 0
+        ? [{ kind: "meta", text: `[stdin] ${stdin.split("\n").length} line(s) provided` }]
+        : [{ kind: "meta", text: "[stdin] none provided" }]),
+    ]);
     try {
       const res = await fetch("http://localhost:3001/api/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, lang: language, sessionId: sessionIdRef.current }),
+        body: JSON.stringify({
+          code,
+          lang: LANGUAGE,
+          stdin,
+          sessionId: sessionIdRef.current,
+        }),
       });
       const data = await res.json();
-      setTerminalLines((prev) => [
-        ...prev,
-        {
-          kind: "output",
-          output: data.output ?? data.error ?? "No output returned.",
-        },
-      ]);
+
+      const entries = [];
+      if (data.compileOutput) {
+        entries.push({ kind: "compile", text: data.compileOutput.trimEnd() });
+      }
+      if (data.stdout) {
+        entries.push({ kind: "stdout", text: data.stdout.replace(/\n$/, "") });
+      }
+      if (data.stderr) {
+        entries.push({ kind: "stderr", text: data.stderr.trimEnd() });
+      }
+      if (data.message) {
+        entries.push({ kind: "stderr", text: data.message.trimEnd() });
+      }
+      // Older/error shapes only carry `output`.
+      if (entries.length === 0 && data.output) {
+        entries.push({ kind: "stdout", text: String(data.output).trimEnd() });
+      }
+      if (entries.length === 0) {
+        entries.push({ kind: "meta", text: "(no output)" });
+      }
+
+      const statusText = data.status ?? "Finished";
+      const meta = [
+        data.exitCode !== null && data.exitCode !== undefined ? `exit ${data.exitCode}` : null,
+        data.time ? `${data.time}s` : null,
+        data.memory ? `${data.memory} KB` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      entries.push({
+        kind: statusText === "Accepted" ? "ok" : "stderr",
+        text: `— ${statusText}${meta ? ` (${meta})` : ""}`,
+      });
+      pushConsole(entries);
     } catch (err) {
-      setTerminalLines((prev) => [
-        ...prev,
-        { kind: "output", output: `Network error — ${err.message}` },
-      ]);
+      pushConsole([{ kind: "stderr", text: `Network error — ${err.message}` }]);
     } finally {
       setIsRunning(false);
     }
   }
+
+  const isSubmitted = sessionStatus === "SUBMITTED";
+  // The divider only exists when there IS a PDF — no empty pane otherwise.
+  const showPdf = Boolean(hasPdf && assignmentId);
 
   return (
     <div className="app">
       <TopBar
         onRun={handleRun}
         isRunning={isRunning}
-        language={language}
-        onLanguageChange={setLanguage}
         onSubmit={handleSubmit}
-        isSubmitted={sessionStatus === "SUBMITTED"}
+        isSubmitted={isSubmitted}
+        onBack={onBack}
+        title={assignmentTitle}
+        labMode={assignmentTitle ? LAB_MODE_EFFECTIVE : undefined}
       />
-      {sessionStatus === "SUBMITTED" && (
+      {isSubmitted && (
         <div className={`submit-banner ${submitOutcome === "ALREADY_SUBMITTED" ? "already" : "fresh"}`}>
           {submitOutcome === "ALREADY_SUBMITTED"
             ? "This assignment has already been submitted. The editor is locked."
             : "✓ Submitted successfully. You may now safely close this tab or return to your class."}
         </div>
       )}
-      <div className="workspace">
-        <Sidebar />
+      <div
+        className={`workspace ${showPdf ? "has-pdf" : ""}`}
+        ref={workspaceRef}
+        style={showPdf ? { "--pdf-width": `${pdfPct}%` } : undefined}
+      >
+        {showPdf && (
+          <>
+            <div className="pdf-column">
+              <PdfPane assignmentId={assignmentId} />
+            </div>
+            <div
+              className="split-divider"
+              onPointerDown={startDrag}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize assignment pane"
+              title="Drag to resize"
+            />
+          </>
+        )}
         <div className="main-content">
           <EditorPane
             code={code}
-            language={language}
+            language={LANGUAGE}
             onChange={setCode}
             onCursorChange={(line, col) => setCursor({ line, col })}
             onFlush={handleFlush}
-            isSubmitted={sessionStatus === "SUBMITTED"}
+            isSubmitted={isSubmitted}
             studentId={STUDENT_ID_EFFECTIVE}
             sessionIdRef={sessionIdRef}
             labMode={LAB_MODE_EFFECTIVE}
             assignmentId={assignmentId}
           />
-          <Terminal lines={terminalLines} />
+          <Terminal
+            events={consoleEvents}
+            stdin={stdin}
+            onStdinChange={setStdin}
+            onClear={() => setConsoleEvents([])}
+            running={isRunning}
+            disabled={isSubmitted}
+          />
         </div>
       </div>
-      <StatusBar language={language} line={cursor.line} col={cursor.col} />
+      <StatusBar language={LANGUAGE} line={cursor.line} col={cursor.col} />
     </div>
   );
 }

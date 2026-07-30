@@ -193,10 +193,10 @@ export default function EditorPane({
   return (
     <div className="editor-pane">
       <div className="editor-tabs">
+        {/* One file, no close button — the exam has a single source file. */}
         <div className="editor-tab active">
-          <span className="tab-badge cpp">C</span>
+          <span className="tab-badge cpp">C++</span>
           main.cpp
-          <span className="tab-close">&#215;</span>
         </div>
       </div>
       <div className="editor-body">

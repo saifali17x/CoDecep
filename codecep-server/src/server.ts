@@ -474,39 +474,87 @@ app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, 
 })
 
 // ── POST /api/execute ─────────────────────────────────────────────────────
+// Judge0 is a SUBMISSION model: source + all stdin go up together and the
+// program runs to completion. That is why the exam console takes batch stdin
+// (Session 21) — a reactive TTY would need a persistent sandboxed VM per
+// student, which is out of scope. Returns the Judge0 streams SEPARATELY so the
+// client console can style stdout / stderr / compile output distinctly.
+const STDIN_MAX_CHARS = 100_000
+
 app.post('/api/execute', async (req: Request, res: Response) => {
-  const { code, lang, sessionId } = req.body
+  const { code, lang, sessionId, stdin } = req.body
 
   if (typeof code !== 'string' || code.trim().length === 0) {
     res.status(400).json({ error: 'Request body must contain a non-empty "code" string.' })
+    return
+  }
+  if (stdin !== undefined && typeof stdin !== 'string') {
+    res.status(400).json({ error: '"stdin" must be a string when present.' })
+    return
+  }
+  if (typeof stdin === 'string' && stdin.length > STDIN_MAX_CHARS) {
+    res.status(400).json({ error: `"stdin" exceeds ${STDIN_MAX_CHARS} characters.` })
     return
   }
 
   const languageId = lang === 'c' ? 50 : 54
 
   try {
+    // base64_encoded=true is REQUIRED, not cosmetic: g++ diagnostics contain
+    // bytes Judge0 cannot round-trip as plain UTF-8, and the plain-text mode
+    // answers 400 for exactly the compile errors students most need to see.
     const judge0Res = await fetch(
-      'https://ce.judge0.com/submissions?base64_encoded=false&wait=true',
+      'https://ce.judge0.com/submissions?base64_encoded=true&wait=true',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_code: code, language_id: languageId }),
+        body: JSON.stringify({
+          source_code: Buffer.from(code, 'utf8').toString('base64'),
+          language_id: languageId,
+          // Judge0 feeds these lines to the program's cin/scanf reads in order.
+          ...(typeof stdin === 'string' && stdin.length > 0
+            ? { stdin: Buffer.from(stdin, 'utf8').toString('base64') }
+            : {}),
+        }),
       }
     )
 
     if (!judge0Res.ok) {
-      res.status(502).json({ output: `Judge0 error — HTTP ${judge0Res.status}. Try again shortly.` })
+      const message = `Judge0 error — HTTP ${judge0Res.status}. Try again shortly.`
+      res.status(502).json({ output: message, stderr: message, status: 'Execution service error' })
       return
     }
 
-    const data = await judge0Res.json() as {
-      stdout?: string
-      stderr?: string
-      compile_output?: string
+    const raw = await judge0Res.json() as {
+      stdout?: string | null
+      stderr?: string | null
+      compile_output?: string | null
+      message?: string | null
+      time?: string | null
+      memory?: number | null
+      exit_code?: number | null
+      status?: { id?: number; description?: string } | null
     }
 
-    const output = data.compile_output ?? data.stderr ?? data.stdout ?? '(no output)'
-    debugLog(`[EXECUTE] lang=${lang ?? 'cpp'} id=${languageId} → output (${output.length} chars)`)
+    const decode = (b64: string | null | undefined): string =>
+      typeof b64 === 'string' && b64.length > 0
+        ? Buffer.from(b64, 'base64').toString('utf8')
+        : ''
+
+    const data = {
+      ...raw,
+      stdout: decode(raw.stdout),
+      stderr: decode(raw.stderr),
+      compile_output: decode(raw.compile_output),
+      message: decode(raw.message),
+    }
+
+    // Legacy single-string field kept for backward compatibility.
+    const output = data.compile_output || data.stderr || data.stdout || '(no output)'
+    debugLog(
+      `[EXECUTE] lang=${lang ?? 'cpp'} id=${languageId} stdin=${typeof stdin === 'string' ? stdin.length : 0}ch ` +
+      `→ status=${data.status?.description ?? 'unknown'}`
+    )
 
     // Increment runCount so Metric A has an accurate compile count
     if (typeof sessionId === 'string' && sessionId.length > 0) {
@@ -516,10 +564,25 @@ app.post('/api/execute', async (req: Request, res: Response) => {
       }).catch(() => { /* session may not exist in tests — silently ignore */ })
     }
 
-    res.status(200).json({ output: output.trimEnd() })
+    res.status(200).json({
+      output: output.trimEnd(),
+      stdout: data.stdout ?? '',
+      stderr: data.stderr ?? '',
+      compileOutput: data.compile_output ?? '',
+      message: data.message ?? '',
+      status: data.status?.description ?? 'Unknown',
+      statusId: data.status?.id ?? null,
+      time: data.time ?? null,
+      memory: data.memory ?? null,
+      exitCode: data.exit_code ?? null,
+    })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    res.status(502).json({ output: `Failed to reach Judge0 — ${message}` })
+    res.status(502).json({
+      output: `Failed to reach Judge0 — ${message}`,
+      stderr: `Failed to reach Judge0 — ${message}`,
+      status: 'Execution service unreachable',
+    })
   }
 })
 

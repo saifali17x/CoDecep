@@ -1,12 +1,16 @@
+/* Tokenized in Session 21 so the exam screen has one visual language end to end
+   (this bar was the last VS-Code-blue holdover). */
 .status-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 6px;
   height: 22px;
-  background: #007acc;
-  color: #fff;
-  font-size: 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-family: var(--font-ui);
   flex-shrink: 0;
   user-select: none;
 }
@@ -28,9 +32,9 @@
 }
 
 .status-item:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--surface-2);
 }
 
 .status-connected {
-  color: #b0f5b0;
+  color: var(--success);
 }
