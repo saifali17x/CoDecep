@@ -85,6 +85,10 @@ export default function ExamPage() {
       assignmentTitle={assignment.title}
       onBack={() => navigate(-1)}
       hasPdf={Boolean(assignment.assignmentPdfFilename)}
+      // Session 22: a real exam starts from an empty file. Pre-written
+      // boilerplate is code the student neither typed nor pasted, which
+      // muddies the authorship metric's accounting of the final program.
+      initialCode=""
     />
   );
 }

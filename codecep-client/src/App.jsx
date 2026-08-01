@@ -12,8 +12,12 @@ import "./App.css";
 // Will come from assignment config in a future phase.
 const LAB_MODE = "LIVE_LAB"; // 'LIVE_LAB' | 'ASSESSMENT'
 
-// Exported so the DVR replay engine can use the same template as the
-// initial-text anchor (display only — no behavior change).
+// Dev-only starter template for the propless /legacy flow. A REAL exam starts
+// blank (ExamPage passes initialCode="") so every character of the submitted
+// program is accounted for as either typed or pasted — pre-written boilerplate
+// belongs to neither, and would silently inflate the authorship denominator.
+// Still exported so the DVR replay engine can use it as the initial-text
+// anchor for legacy sessions (display only — no behavior change).
 export const DEFAULT_CODE = `#include <iostream>
 using namespace std;
 
@@ -47,6 +51,9 @@ function App({
   assignmentTitle,
   onBack,
   hasPdf = false,
+  // Starting editor contents. A real exam passes "" (blank start); the
+  // propless /legacy dev flow keeps the small template.
+  initialCode = DEFAULT_CODE,
 } = {}) {
   // Effective values: props (real identity from ExamPage) fall back to the
   // hardcoded module consts so the propless /legacy dev flow is unchanged.
@@ -57,7 +64,7 @@ function App({
   // the first frame; no session create, no telemetry, no fresh submission).
   const INITIAL_STATUS = initialStatusProp ?? "IN_PROGRESS";
 
-  const [code, setCode] = useState(DEFAULT_CODE);
+  const [code, setCode] = useState(initialCode);
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [isRunning, setIsRunning] = useState(false);
   const [sessionStatus, setSessionStatus] = useState(INITIAL_STATUS);
@@ -82,7 +89,7 @@ function App({
   // always reads the CURRENT value, not the value frozen at mount.
   const sessionIdRef = useRef(null);
   const sessionStatusRef = useRef(INITIAL_STATUS);
-  const codeRef = useRef(DEFAULT_CODE);
+  const codeRef = useRef(initialCode);
 
   // Focus-gated timer — counts milliseconds while the tab is visible
   const engagedTimeRef = useRef(0);   // banked ms from past focus windows

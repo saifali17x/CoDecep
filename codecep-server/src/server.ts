@@ -14,7 +14,16 @@ import multer from 'multer'
 import rateLimit from 'express-rate-limit'
 import { PDFParse } from 'pdf-parse'
 import { validateAST } from './ast/parser'
-import { computeMetricA, computeLinearInjection, computeRoboticVariance } from './forensics/metrics'
+import {
+  computeMetricA,
+  computeLinearInjection,
+  computeRoboticVariance,
+  computeAuthorship,
+  finalCodeLengthOf,
+  markInconclusiveIfSubstantial,
+  LINEAR_INSUFFICIENT_REASON,
+  ROBOTIC_INSUFFICIENT_REASON,
+} from './forensics/metrics'
 import { signToken, requireAuth, requireRole } from './auth'
 import { parseSyllabusToAllowlist } from './gemini'
 import {
@@ -129,18 +138,35 @@ const forensicsWorker = new Worker(
     }
 
     const runCount = session.runCount ?? 0
+    // The submitted program's length — the denominator authorship reasons in,
+    // and the test for whether a sparse B/C result is "nothing happened" or
+    // "a whole program appeared without being typed".
+    const finalCodeLength = finalCodeLengthOf(session.playback_log)
+
     const metricA = computeMetricA(runCount)
-    const metricB = computeLinearInjection(session.playback_log)
-    const metricC = computeRoboticVariance(session.burst_history)
+    const authorship = computeAuthorship(session.playback_log, finalCodeLength)
+    // B and C keep their own math untouched; only a tripped too-little-data
+    // guard on a substantial program gets re-worded so it can't read as a pass.
+    const metricB = markInconclusiveIfSubstantial(
+      computeLinearInjection(session.playback_log),
+      LINEAR_INSUFFICIENT_REASON,
+      finalCodeLength,
+    )
+    const metricC = markInconclusiveIfSubstantial(
+      computeRoboticVariance(session.burst_history),
+      ROBOTIC_INSUFFICIENT_REASON,
+      finalCodeLength,
+    )
 
     await prisma.session.update({
       where: { id: sessionId },
-      data: { forensicsResults: { metricA, metricB, metricC } },
+      data: { forensicsResults: { metricA, metricB, metricC, authorship } },
     })
 
     console.log(`[FORENSICS] Session ${sessionId} processed — metricA runCount=${runCount} flag=${metricA.flag}`)
-    console.log(`[FORENSICS] session ${sessionId} metricB flag=${metricB.flag} deleteRatio=${metricB.stats.deleteRatio.toFixed(3)} singleCharRatio=${metricB.stats.singleCharTypeRatio.toFixed(3)}`)
-    console.log(`[FORENSICS] session ${sessionId} metricC flag=${metricC.flag} cv=${metricC.stats.cv} sampleCount=${metricC.stats.sampleCount}`)
+    console.log(`[FORENSICS] session ${sessionId} metricB flag=${metricB.flag} deleteRatio=${metricB.stats.deleteRatio.toFixed(3)} singleCharRatio=${metricB.stats.singleCharTypeRatio.toFixed(3)}${metricB.inconclusive ? ' inconclusive=true' : ''}`)
+    console.log(`[FORENSICS] session ${sessionId} metricC flag=${metricC.flag} cv=${metricC.stats.cv} sampleCount=${metricC.stats.sampleCount}${metricC.inconclusive ? ' inconclusive=true' : ''}`)
+    console.log(`[FORENSICS] session ${sessionId} authorship flag=${authorship.flag} finalCodeLength=${finalCodeLength} typedRatio=${authorship.stats.typedRatio} pastedRatio=${authorship.stats.pastedRatio}`)
   },
   { connection: redisConnection },
 )
