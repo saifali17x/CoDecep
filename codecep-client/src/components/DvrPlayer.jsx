@@ -3,11 +3,12 @@ import Editor from "@monaco-editor/react";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import { buildReplay } from "../lib/replayEngine";
-import { DEFAULT_CODE } from "../App";
 import {
   metricASeverity,
   metricBSeverity,
   metricCSeverity,
+  authorshipSeverity,
+  inconclusiveSeverity,
   LEVEL_COLORS,
 } from "../lib/metricColors";
 import "./DvrPlayer.css";
@@ -23,22 +24,78 @@ const METRIC_LABELS = {
   metricA: "Metric A (Trial-and-Error)",
   metricB: "Metric B (Linear Injection)",
   metricC: "Metric C (Robotic Variance)",
+  authorship: "Authorship (Typed vs Pasted)",
 };
 const SPEEDS = [1, 2, 5, 10, 25];
 const PASTE_FLASH_MS = 1200;
 
+// Session 22 (part 2): the live Tier-1 feed is now also summarised per session.
+const TIER1_LABELS = {
+  tabOut: "Tab-outs",
+  illegalPaste: "External pastes",
+  astViolation: "AST violations",
+};
+
 function MetricPill({ metricKey, metric }) {
-  const sev =
-    metricKey === "metricA"
+  const sev = metric?.inconclusive
+    ? // B/C whose guard tripped on a substantial program: grey, never green.
+      inconclusiveSeverity()
+    : metricKey === "metricA"
       ? metricASeverity(metric?.runCount)
       : metricKey === "metricC"
         ? metricCSeverity(metric?.stats?.cv ?? null)
-        : metricBSeverity(metric?.flag);
+        : metricKey === "authorship"
+          ? authorshipSeverity(metric?.flag, metric?.stats?.typedRatio ?? null)
+          : metricBSeverity(metric?.flag);
   const color = LEVEL_COLORS[sev.level];
   return (
     <span className="dvr-pill" style={{ color, borderColor: color }} title={metric?.reason ?? sev.label}>
       {METRIC_LABELS[metricKey]}: {sev.label}
     </span>
+  );
+}
+
+// Counts, colored by whether anything fired — never a verdict on its own.
+// `recorded: false` = the session predates the Tier-1 record, so tab-outs and
+// AST violations are UNKNOWN and must read "not recorded", never "0".
+function Tier1Row({ summary }) {
+  if (!summary) return null;
+  return (
+    <div className="dvr-tier1">
+      <span className="dvr-tier1-title">Live violations during the exam:</span>
+      {Object.entries(TIER1_LABELS).map(([key, label]) => {
+        const n = summary[key];
+        const unknown = n === null || n === undefined;
+        const color = unknown
+          ? LEVEL_COLORS.grey
+          : n > 0
+            ? LEVEL_COLORS.red
+            : LEVEL_COLORS.green;
+        return (
+          <span
+            key={key}
+            className="dvr-pill"
+            style={{ color, borderColor: color }}
+            title={
+              unknown
+                ? "Not recorded — this session predates per-session Tier-1 logging."
+                : n > 0
+                  ? `${n} ${label.toLowerCase()} — flagged for review`
+                  : `No ${label.toLowerCase()} recorded`
+            }
+          >
+            {label}: {unknown ? "not recorded" : n}
+          </span>
+        );
+      })}
+      {!summary.recorded && (
+        <span className="dvr-severity-note">
+          Tier-1 alerts were not recorded for this session — external pastes are
+          reconstructed from the keystroke log; tab-outs and AST violations are
+          unknown, not zero.
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -86,8 +143,12 @@ export default function DvrPlayer({ sessionId }) {
     };
   }, [sessionId, token]);
 
+  // Session 22 (part 2): replay is anchored at an EMPTY document, matching the
+  // real exam start. It used to anchor at DEFAULT_CODE, which is now wrong —
+  // and anchoring at the first snapshot is what made a first-event paste
+  // invisible (see lib/replayEngine.js).
   const replay = useMemo(
-    () => (data ? buildReplay(data, { initialText: DEFAULT_CODE }) : null),
+    () => (data ? buildReplay(data, { initialText: "" }) : null),
     [data],
   );
   const duration = replay?.totalDurationMs ?? 0;
@@ -218,14 +279,16 @@ export default function DvrPlayer({ sessionId }) {
             ))}
             <span className="dvr-severity-note">
               Colors are severity guidance — "flagged" means flagged for instructor
-              review. The run-count threshold is a configurable default; judge it
-              against task complexity.
+              review. The run-count and typed-share thresholds are configurable
+              defaults; judge them against task complexity.
             </span>
           </>
         ) : (
           <span className="dvr-pill pending">Forensics pending (session not yet submitted)</span>
         )}
       </div>
+
+      <Tier1Row summary={data.tier1Summary} />
 
       {duration === 0 ? (
         <div className="dvr-empty">

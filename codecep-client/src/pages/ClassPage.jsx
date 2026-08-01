@@ -9,6 +9,8 @@ import {
   metricASeverity,
   metricBSeverity,
   metricCSeverity,
+  authorshipSeverity,
+  inconclusiveSeverity,
   LEVEL_COLORS,
 } from "../lib/metricColors";
 import "./portal.css";
@@ -296,6 +298,7 @@ export default function ClassPage() {
                                   <th title="Metric A — Trial-and-Error">A</th>
                                   <th title="Metric B — Linear Injection">B</th>
                                   <th title="Metric C — Robotic Variance">C</th>
+                                  <th title="Authorship — how much of the final code came from typing">Auth</th>
                                   <th>Submitted</th>
                                   <th></th>
                                 </tr>
@@ -323,8 +326,18 @@ export default function ClassPage() {
                                     <td>
                                       {s.forensicsResults ? (
                                         <SeverityCell
-                                          sev={metricBSeverity(s.forensicsResults.metricB?.flag)}
-                                          short={s.forensicsResults.metricB?.flag ? "flag" : "ok"}
+                                          sev={
+                                            s.forensicsResults.metricB?.inconclusive
+                                              ? inconclusiveSeverity()
+                                              : metricBSeverity(s.forensicsResults.metricB?.flag)
+                                          }
+                                          short={
+                                            s.forensicsResults.metricB?.inconclusive
+                                              ? "n/a"
+                                              : s.forensicsResults.metricB?.flag
+                                                ? "flag"
+                                                : "ok"
+                                          }
                                         />
                                       ) : (
                                         <SeverityCell sev={PENDING_SEV} short="—" />
@@ -333,11 +346,36 @@ export default function ClassPage() {
                                     <td>
                                       {s.forensicsResults ? (
                                         <SeverityCell
-                                          sev={metricCSeverity(s.forensicsResults.metricC?.cv ?? null)}
+                                          sev={
+                                            s.forensicsResults.metricC?.inconclusive
+                                              ? inconclusiveSeverity()
+                                              : metricCSeverity(s.forensicsResults.metricC?.cv ?? null)
+                                          }
                                           short={
-                                            s.forensicsResults.metricC?.cv != null
-                                              ? `CV ${s.forensicsResults.metricC.cv.toFixed(2)}`
-                                              : "—"
+                                            s.forensicsResults.metricC?.inconclusive
+                                              ? "n/a"
+                                              : s.forensicsResults.metricC?.cv != null
+                                                ? `CV ${s.forensicsResults.metricC.cv.toFixed(2)}`
+                                                : "—"
+                                          }
+                                        />
+                                      ) : (
+                                        <SeverityCell sev={PENDING_SEV} short="—" />
+                                      )}
+                                    </td>
+                                    <td>
+                                      {s.forensicsResults?.authorship?.flag != null ? (
+                                        <SeverityCell
+                                          sev={authorshipSeverity(
+                                            s.forensicsResults.authorship.flag,
+                                            s.forensicsResults.authorship.typedRatio,
+                                          )}
+                                          short={
+                                            s.forensicsResults.authorship.typedRatio != null
+                                              ? `${Math.round(s.forensicsResults.authorship.typedRatio * 100)}% typed`
+                                              : s.forensicsResults.authorship.flag
+                                                ? "pasted"
+                                                : "ok"
                                           }
                                         />
                                       ) : (

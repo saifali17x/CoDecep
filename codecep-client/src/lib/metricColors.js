@@ -58,3 +58,33 @@ export function metricBSeverity(flag) {
     ? { level: "red", label: "linear injection — flagged for review" }
     : { level: "green", label: "no flag" };
 }
+
+// "Inconclusive" (Session 22) — the worker tags Metric B or C when its
+// too-little-data guard tripped on a session that still submitted a full
+// program. Rendering that as a green "no flag" would undo the whole point of
+// the tag: not assessable is NOT the same as clean.
+export function inconclusiveSeverity() {
+  return { level: "grey", label: "not assessable — see authorship" };
+}
+
+// Authorship (Session 22) — how much of the submitted program can be accounted
+// for by typing. LOWER typed share = more suspicious. `typedRatio` is optional
+// context; the flag is what the worker decided (MIN_CODE_LEN / TYPED_MIN are
+// tunable defaults, not empirical law — same status as RUNCOUNT_OK_DEFAULT).
+export function authorshipSeverity(flag, typedRatio) {
+  const pct =
+    typeof typedRatio === "number" && Number.isFinite(typedRatio)
+      ? `${Math.round(typedRatio * 100)}% typed`
+      : null;
+  if (flag === null || flag === undefined) {
+    return { level: "grey", label: pct ?? "authorship — insufficient data" };
+  }
+  return flag
+    ? {
+        level: "red",
+        label: pct
+          ? `${pct} — mostly pasted (flagged for review)`
+          : "mostly pasted — flagged for review",
+      }
+    : { level: "green", label: pct ? `${pct} — no flag` : "no flag" };
+}

@@ -13,6 +13,11 @@ model Session {
   playback_log     Json     @default("[]")
   burst_history    Json     @default("[]")
   forensicsResults Json?
+  // Session 22 (part 2) — Tier-1 alert record: [{ type, timestamp, detail }].
+  // Deliberately NULLABLE with NO default so a NULL means "this session predates
+  // the feature" while [] means "recorded, nothing fired". Session create sets
+  // it to []; the socket relay appends while the session is IN_PROGRESS.
+  tier1_log        Json?
   runCount         Int      @default(0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

@@ -87,6 +87,22 @@
 .dvr-error { color: var(--danger); }
 
 /* Session 17 — severity note under the colored pills */
+/* ── Session 22 (part 2) — Tier-1 violation counts ──────────────────────── */
+/* Same pill language as the metric row, one line down, so the report reads as
+   "what the metrics concluded" then "what actually fired during the exam". */
+.dvr-tier1 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.dvr-tier1-title {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
 .dvr-severity-note {
   display: block;
   width: 100%;

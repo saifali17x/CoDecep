@@ -21,6 +21,24 @@
 export const DEFAULT_IDLE_GAP_MS = 5000;
 export const PASTE_MARK_MIN_CHARS = 20; // pastes at least this big get marks
 
+// Session 22 (part 2) — LEAD-IN. The timeline used to start AT the first
+// keystroke (t0 = events[0].timestamp), so the first event's frame sat at t=0
+// and its effect was already on screen before playback began. A student who
+// pasted their whole solution as their first action therefore appeared to have
+// "always had" the code — and when the paste was the ONLY event, the last
+// frame was also at t=0, totalDurationMs was 0, and the player fell through to
+// its "no keystroke activity" empty state. The single most incriminating
+// session in the system rendered as nothing at all.
+//
+// Fix: anchor the timeline at `openedAt` (when the exam was opened) so the
+// replay opens on an empty document and the first event is SEEN arriving.
+// When openedAt is missing or unusable (legacy payloads, clock skew) fall back
+// to a small synthetic lead-in — enough to see the arrival, never enough to
+// invent activity. The lead-in is registered as an idle gap, so skip-idle
+// fast-forwards a long "sat there before typing" pause exactly as it does mid-
+// session.
+export const FALLBACK_LEAD_IN_MS = 1500;
+
 // Common prefix/suffix diff: from → to expressed as one changed region.
 export function diffTexts(from, to) {
   let p = 0;
@@ -61,7 +79,13 @@ export function buildReplay(data, opts = {}) {
     };
   }
 
-  const t0 = events[0].timestamp;
+  // Timeline origin: the moment the exam was OPENED, not the first keystroke.
+  const firstEventTs = events[0].timestamp;
+  const openedAt = Number(data?.openedAt);
+  const t0 =
+    Number.isFinite(openedAt) && openedAt < firstEventTs
+      ? openedAt
+      : firstEventTs - FALLBACK_LEAD_IN_MS;
 
   // Partition the flattened events back into flush windows via eventCount.
   // (Windows without an eventCount — defensive — fall back to "rest".)
@@ -132,7 +156,11 @@ export function buildReplay(data, opts = {}) {
           provenance: ev.provenance ?? null,
         });
       }
-      if (ev.timeSinceLastKeystrokeMs > idleGapMs && frames.length > 1) {
+      if (frames.length === 1) {
+        // The lead-in before the first keystroke: real dead time (the exam was
+        // open, nothing was typed). Skippable like any other idle gap.
+        if (t > idleGapMs) gaps.push({ start: 0, end: t, durationMs: t });
+      } else if (ev.timeSinceLastKeystrokeMs > idleGapMs) {
         gaps.push({ start: t - ev.timeSinceLastKeystrokeMs, end: t, durationMs: ev.timeSinceLastKeystrokeMs });
       }
     });

@@ -207,6 +207,11 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
         data: {
           studentId,
           status: 'IN_PROGRESS',
+          // Session 22 (part 2): an EMPTY log means "Tier-1 alerts are being
+          // recorded for this session, none fired yet". NULL (the column's
+          // state for pre-feature rows) means "not recorded" — the report must
+          // never confuse the two.
+          tier1_log: [],
           // Backward compatible: the hardcoded student-001 dev flow sends neither.
           ...(typeof userId === 'string' && userId.length > 0 ? { userId } : {}),
           ...(typeof assignmentId === 'string' && assignmentId.length > 0 ? { assignmentId } : {}),
@@ -380,6 +385,12 @@ app.get(
       forensicsResults: session.forensicsResults,
       startedAt: events[0]?.timestamp ?? session.createdAt.getTime(),
       endedAt: events[events.length - 1]?.timestamp ?? session.updatedAt.getTime(),
+      // Session 22 (part 2): when the exam was OPENED, as distinct from when
+      // the first keystroke landed. The replay needs it to show an empty
+      // document before the first event — otherwise a first-event paste is
+      // already on screen at t=0 and is never seen arriving.
+      openedAt: session.createdAt.getTime(),
+      tier1Summary: summariseTier1(session.tier1_log, session.playback_log),
       snapshots,
       events,
     })
@@ -1017,8 +1028,9 @@ function sessionSummary(s: SessionRow) {
   const fr = s.forensicsResults as
     | {
         metricA?: { flag?: boolean }
-        metricB?: { flag?: boolean }
-        metricC?: { flag?: boolean; stats?: { cv?: number | null } }
+        metricB?: { flag?: boolean; inconclusive?: boolean }
+        metricC?: { flag?: boolean; inconclusive?: boolean; stats?: { cv?: number | null } }
+        authorship?: { flag?: boolean; stats?: { typedRatio?: number | null } }
       }
     | null
   return {
@@ -1031,10 +1043,25 @@ function sessionSummary(s: SessionRow) {
     forensicsResults: fr
       ? {
           metricA: { flag: fr.metricA?.flag ?? null },
-          metricB: { flag: fr.metricB?.flag ?? null },
+          // `inconclusive` (Session 22) rides along with the flag: without it a
+          // guard-tripped metric renders as a green "ok" in the session table,
+          // which is exactly the clean-pass misreading part 1 set out to stop.
+          metricB: { flag: fr.metricB?.flag ?? null, inconclusive: fr.metricB?.inconclusive ?? false },
           // cv is a single derived scalar (needed for the severity color
           // scale) — still no full stats and never raw events.
-          metricC: { flag: fr.metricC?.flag ?? null, cv: fr.metricC?.stats?.cv ?? null },
+          metricC: {
+            flag: fr.metricC?.flag ?? null,
+            cv: fr.metricC?.stats?.cv ?? null,
+            inconclusive: fr.metricC?.inconclusive ?? false,
+          },
+          // Session 22 (part 2): authorship's flag plus typedRatio — one more
+          // derived scalar for the severity label ("54% typed"), consistent
+          // with how metricC exposes cv. Absent on sessions processed before
+          // the metric existed → null, which renders as "insufficient data".
+          authorship: {
+            flag: fr.authorship?.flag ?? null,
+            typedRatio: fr.authorship?.stats?.typedRatio ?? null,
+          },
         }
       : null,
   }
@@ -1226,6 +1253,75 @@ const io = new SocketServer(httpServer, {
   cors: { origin: 'http://localhost:5173' },
 })
 
+// ── Tier-1 alert recording (Session 22, part 2) ───────────────────────────
+// The live relay is stateless by design (Constraint 3). This ADDS a durable
+// per-session record so the forensic report can say what fired and how often.
+// One atomic JSONB append, same pattern as telemetry ingest (Constraint 1) —
+// never a read-modify-write of the array in Node.
+//
+// The `status = 'IN_PROGRESS'` guard means a post-submission alert can never be
+// recorded: that is a genuine (partial) server-side Immune Phase for the
+// RECORD, though the relay itself is still unguarded (gap #3).
+const TIER1_TYPES = new Set(['TAB_OUT', 'ILLEGAL_PASTE', 'AST_VIOLATION'])
+
+// Mirrors PASTE_THRESHOLD in the client's EditorPane — used ONLY to reconstruct
+// how many ILLEGAL_PASTE alerts a pre-tier1_log session would have raised.
+// Detection itself still lives entirely in the client; this changes nothing
+// about what fires.
+const PASTE_THRESHOLD = 50
+
+async function recordTier1Alert(payload: {
+  type: string
+  sessionId: string
+  timestamp: number
+  detail: string
+}) {
+  if (!TIER1_TYPES.has(payload.type)) return
+  if (typeof payload.sessionId !== 'string' || payload.sessionId.length === 0) return
+  const entry = {
+    type: payload.type,
+    timestamp: typeof payload.timestamp === 'number' ? payload.timestamp : Date.now(),
+    detail: typeof payload.detail === 'string' ? payload.detail : '',
+  }
+  try {
+    await prisma.$executeRaw`
+      UPDATE sessions
+      SET tier1_log = COALESCE(tier1_log, '[]'::jsonb) || ${JSON.stringify([entry])}::jsonb
+      WHERE id = ${payload.sessionId} AND status = 'IN_PROGRESS'
+    `
+  } catch (err) {
+    // Never let the record break the live alert path.
+    console.error(`[TIER1] Failed to record ${payload.type}:`, (err as Error).message)
+  }
+}
+
+// Counts per Tier-1 type for the report. `recorded: false` means this session
+// predates the tier1_log (NULL) — its tab-outs and AST violations are genuinely
+// unknown, and must be shown as "not recorded", never as zero. External pastes
+// stay recoverable from playback_log either way, so we still report those.
+function summariseTier1(tier1Log: unknown, playbackLog: unknown) {
+  if (Array.isArray(tier1Log)) {
+    const entries = tier1Log as { type?: string }[]
+    const count = (type: string) => entries.filter((e) => e?.type === type).length
+    return {
+      tabOut: count('TAB_OUT'),
+      illegalPaste: count('ILLEGAL_PASTE'),
+      astViolation: count('AST_VIOLATION'),
+      recorded: true,
+    }
+  }
+  // Legacy session: mirror the client's ILLEGAL_PASTE rule (external paste over
+  // PASTE_THRESHOLD) against the stored keystroke events.
+  const log = Array.isArray(playbackLog) ? (playbackLog as any[]) : []
+  const pasteAlerts = log
+    .flatMap((entry) => (Array.isArray(entry?.events) ? entry.events : []))
+    .filter(
+      (e: any) =>
+        e?.actionType === 'paste' && e?.charDelta > PASTE_THRESHOLD && e?.provenance !== 'internal'
+    ).length
+  return { tabOut: null, illegalPaste: pasteAlerts, astViolation: null, recorded: false }
+}
+
 io.on('connection', (socket) => {
   socket.on('join_instructor', () => {
     socket.join('instructors')
@@ -1235,6 +1331,10 @@ io.on('connection', (socket) => {
   socket.on('alert', (payload: { type: string; studentId: string; sessionId: string; timestamp: number; detail: string }) => {
     debugLog(`[RELAY] ${payload.type} -> instructors | session=${payload.sessionId} detail="${payload.detail}"`)
     io.to('instructors').emit('alert', payload)
+    // Session 22 (part 2) — also RECORD it, so the post-submission report can
+    // summarise Tier-1 violations instead of them existing only in the live
+    // feed. Fire-and-forget: relay latency must not depend on the DB.
+    void recordTier1Alert(payload)
   })
 })
 
