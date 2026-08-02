@@ -197,9 +197,10 @@ export default function DvrPlayer({ sessionId }) {
   }, [sessionId, token]);
 
   // Session 22 (part 2): replay is anchored at an EMPTY document, matching the
-  // real exam start. It used to anchor at DEFAULT_CODE, which is now wrong —
-  // and anchoring at the first snapshot is what made a first-event paste
-  // invisible (see lib/replayEngine.js).
+  // real exam start. It used to anchor at the old starter template, which is
+  // now wrong for every flow (Session 25 removed the template entirely) — and
+  // anchoring at the first snapshot is what made a first-event paste invisible
+  // (see lib/replayEngine.js).
   const replay = useMemo(
     () => (data ? buildReplay(data, { initialText: "" }) : null),
     [data],

@@ -22,20 +22,13 @@ import "./App.css";
 // Will come from assignment config in a future phase.
 const LAB_MODE = "LIVE_LAB"; // 'LIVE_LAB' | 'ASSESSMENT'
 
-// Dev-only starter template for the propless /legacy flow. A REAL exam starts
-// blank (ExamPage passes initialCode="") so every character of the submitted
-// program is accounted for as either typed or pasted — pre-written boilerplate
-// belongs to neither, and would silently inflate the authorship denominator.
-// Still exported so the DVR replay engine can use it as the initial-text
-// anchor for legacy sessions (display only — no behavior change).
-export const DEFAULT_CODE = `#include <iostream>
-using namespace std;
-
-int main() {
-    cout << "Hello, World!" << endl;
-    return 0;
-}
-`;
+// Session 25 — there is no starter template ANYWHERE any more, not even for
+// /legacy. Every flow now opens an empty main.cpp, so every character of the
+// submitted program is accounted for as either typed or pasted; pre-written
+// boilerplate belongs to neither and silently inflated the authorship
+// denominator. The old `DEFAULT_CODE` export is gone: nothing consumed it (the
+// DVR replay anchor became "" in Session 22), so keeping a second starting
+// state alive only invited the two flows to drift apart.
 
 const STUDENT_ID = "student-001";
 
@@ -65,9 +58,9 @@ function App({
   assignmentTitle,
   onBack,
   hasPdf = false,
-  // Starting editor contents. A real exam passes "" (blank start); the
-  // propless /legacy dev flow keeps the small template.
-  initialCode = DEFAULT_CODE,
+  // Starting editor contents. Blank in every flow (see above); the prop is
+  // kept so a caller could seed a buffer deliberately, but nothing does.
+  initialCode = "",
 } = {}) {
   // Effective values: props (real identity from ExamPage) fall back to the
   // hardcoded module consts so the propless /legacy dev flow is unchanged.
@@ -89,6 +82,9 @@ function App({
 
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [isRunning, setIsRunning] = useState(false);
+  // The brief window between clicking Submit and the disarm, during which the
+  // final flush is in flight (see handleSubmit).
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [sessionStatus, setSessionStatus] = useState(INITIAL_STATUS);
   const [sessionId, setSessionId] = useState(null);
   // 'SUBMITTED' (fresh submit) | 'ALREADY_SUBMITTED' (reopen/re-submit) | null
@@ -126,6 +122,15 @@ function App({
   const sessionStatusRef = useRef(INITIAL_STATUS);
   const codeRef = useRef(initialCode);
   const filesRef = useRef(files);
+
+  // Session 25 — final pre-disarm flush. The telemetry buffer lives inside
+  // EditorPane (only it sees keystrokes), so it hands back a drain-and-send
+  // handle here; handleSubmit awaits it before anything else happens.
+  const flushNowRef = useRef(null);
+  // Submit is now asynchronous, which opens a gap where the button is still
+  // live. This makes the whole sequence one-shot: no double flush, no second
+  // forensics enqueue.
+  const submitInFlightRef = useRef(false);
 
   // Focus-gated timer — counts milliseconds while the tab is visible
   const engagedTimeRef = useRef(0);   // banked ms from past focus windows
@@ -242,27 +247,67 @@ function App({
     document.body.classList.add("is-splitting");
   }
 
-  function handleSubmit() {
+  // ── Submit: flush → await → disarm → enqueue (Session 25) ──────────────────
+  // Telemetry flushes every 30s, so up to 30s of the student's FINAL keystrokes
+  // used to die with the interval — often the most forensically interesting
+  // moment (a last-second paste or panic edit), and the forensics worker then
+  // analysed data that was missing that window.
+  //
+  // The fix is ONE extra flush, performed BEFORE the disarm and awaited, so the
+  // BullMQ job the server enqueues cannot race ahead of the data it reads.
+  // Immune Phase semantics are unchanged: it still fires instantly and
+  // synchronously once reached, and nothing after it emits telemetry or alerts.
+  // This is a one-time pre-disarm step, not ongoing post-submit capture.
+  async function handleSubmit() {
+    // One-shot. A reopened-already-submitted session (initialStatus=SUBMITTED)
+    // never reaches the flush or the enqueue either — the server's own
+    // idempotency stays the backstop, not the first line of defence.
+    if (submitInFlightRef.current) return;
+    if (sessionStatusRef.current === "SUBMITTED") return;
+    submitInFlightRef.current = true;
+    setIsSubmitting(true);
+
+    // 1. FINAL FLUSH — still IN_PROGRESS here, so the normal flush path runs
+    //    unchanged (same payload shape as the 30s flush: buffered events + the
+    //    final per-file snapshots). Best-effort: a flaky network must never
+    //    trap a student mid-submit, so a failure is logged and we continue.
+    try {
+      const flushed = await flushNowRef.current?.();
+      if (flushed === true) {
+        debugLog("[SUBMIT] final keystroke window flushed");
+      } else if (flushed === false) {
+        console.warn("[SUBMIT] final flush did not persist — submitting anyway");
+      } else {
+        debugLog("[SUBMIT] no buffered keystrokes — nothing to flush");
+      }
+    } catch (err) {
+      console.warn("[SUBMIT] final flush threw — submitting anyway:", err?.message ?? err);
+    }
+
+    // 2. DISARM — the Immune Phase, exactly as before.
     setSessionStatus("SUBMITTED");
-    sessionStatusRef.current = "SUBMITTED"; // ← disarm the flush immediately
+    sessionStatusRef.current = "SUBMITTED";
     setSubmitOutcome("SUBMITTED"); // optimistic; refined by the server response
+
+    // 3. ENQUEUE FORENSICS — the server flips the row to SUBMITTED and adds the
+    //    BullMQ job, which now reads a complete playback_log.
     const id = sessionIdRef.current;
     if (id) {
-      fetch(`http://localhost:3001/api/session/${id}/submit`, {
-        method: "POST",
-      })
-        .then((r) => r.json())
-        .then((data) => {
-          // Distinguish a real submission from an idempotency hit so the
-          // student never thinks a fresh submission happened when it didn't.
-          if (data?.status === "ALREADY_SUBMITTED") {
-            setSubmitOutcome("ALREADY_SUBMITTED");
-          }
-        })
-        .catch((err) =>
-          console.error("[SUBMIT] Failed to notify server:", err),
-        );
+      try {
+        const res = await fetch(`http://localhost:3001/api/session/${id}/submit`, {
+          method: "POST",
+        });
+        const data = await res.json();
+        // Distinguish a real submission from an idempotency hit so the
+        // student never thinks a fresh submission happened when it didn't.
+        if (data?.status === "ALREADY_SUBMITTED") {
+          setSubmitOutcome("ALREADY_SUBMITTED");
+        }
+      } catch (err) {
+        console.error("[SUBMIT] Failed to notify server:", err);
+      }
     }
+    setIsSubmitting(false);
   }
 
   async function handleFlush(chunk) {
@@ -273,8 +318,10 @@ function App({
     const currentCode = codeRef.current;
     const currentFiles = filesRef.current ?? [];
 
-    if (currentStatus === "SUBMITTED") return;
-    if (!currentSessionId) return;
+    // Returns true only when the server actually accepted the chunk, so the
+    // submit path can tell "persisted" from "lost to a network blip".
+    if (currentStatus === "SUBMITTED") return false;
+    if (!currentSessionId) return false;
 
     // Per-file snapshots (Session 24). The single `codeSnapshot` below is the
     // ACTIVE buffer only, which made the authorship denominator and the DVR
@@ -308,11 +355,13 @@ function App({
       // console (that leakage was the old terminal's problem).
       if (res.status === 202) {
         debugLog(`[FLUSH] ${data.accepted} event(s) accepted — 202`);
-      } else {
-        debugLog(`[FLUSH] server rejected payload — HTTP ${res.status}`);
+        return true;
       }
+      debugLog(`[FLUSH] server rejected payload — HTTP ${res.status}`);
+      return false;
     } catch (err) {
       debugLog(`[FLUSH] network error — ${err.message}`);
+      return false;
     }
   }
 
@@ -482,6 +531,7 @@ function App({
         isRunning={isRunning}
         onSubmit={handleSubmit}
         isSubmitted={isSubmitted}
+        isSubmitting={isSubmitting}
         onBack={onBack}
         title={assignmentTitle}
         labMode={assignmentTitle ? LAB_MODE_EFFECTIVE : undefined}
@@ -531,6 +581,7 @@ function App({
               onChange={handleEditorChange}
               onCursorChange={(line, col) => setCursor({ line, col })}
               onFlush={handleFlush}
+              flushRef={flushNowRef}
               isSubmitted={isSubmitted}
               studentId={STUDENT_ID_EFFECTIVE}
               sessionIdRef={sessionIdRef}

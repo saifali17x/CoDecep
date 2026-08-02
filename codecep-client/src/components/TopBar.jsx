@@ -9,6 +9,9 @@ export default function TopBar({
   isRunning,
   onSubmit,
   isSubmitted,
+  // Session 25: submit awaits one final telemetry flush before it disarms, so
+  // there is a brief in-flight window the button has to reflect.
+  isSubmitting = false,
   onBack,
   title,
   labMode,
@@ -33,9 +36,9 @@ export default function TopBar({
         <button
           className="btn btn-submit"
           onClick={onSubmit}
-          disabled={isSubmitted}
+          disabled={isSubmitted || isSubmitting}
         >
-          {isSubmitted ? "✓ Submitted" : "Submit"}
+          {isSubmitted ? "✓ Submitted" : isSubmitting ? "Submitting..." : "Submit"}
         </button>
       </div>
     </header>

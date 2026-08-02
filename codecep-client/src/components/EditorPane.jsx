@@ -67,6 +67,10 @@ export default function EditorPane({
   onChange,
   onCursorChange,
   onFlush,
+  // Session 25 — App writes a drain-and-send function into this ref so Submit
+  // can flush the final partial window before the Immune Phase disarms. The
+  // buffer lives here, so only this component can drain it.
+  flushRef,
   isSubmitted,
   studentId,
   sessionIdRef,
@@ -175,6 +179,35 @@ export default function EditorPane({
     }, 30_000);
     return () => clearInterval(id);
   }, [isSubmitted]);
+
+  // ── Final pre-disarm flush handle (Session 25) ─────────────────────────────
+  // The 30s interval above owns ordinary flushing. This is the ONE extra flush
+  // Submit performs, before the Immune Phase disarms, so the last partial
+  // window reaches the database instead of dying with the interval.
+  //
+  // Draining is the same synchronous copy-then-clear the interval does, so the
+  // two can never send the same events twice even if they overlap. Returns
+  // `null` when there was nothing buffered (a clean skip, not a failure), and
+  // otherwise whatever the flush reported about persistence.
+  const onFlushRef = useRef(onFlush);
+  useEffect(() => {
+    onFlushRef.current = onFlush;
+  });
+
+  useEffect(() => {
+    if (!flushRef) return undefined;
+    flushRef.current = async () => {
+      if (isSubmittedRef.current) return null; // never after the disarm
+      pushSessionContent(prevCode.current);
+      if (telemetryBuffer.current.length === 0) return null;
+      const payloadToFlush = [...telemetryBuffer.current];
+      telemetryBuffer.current = [];
+      return (await onFlushRef.current(payloadToFlush)) !== false;
+    };
+    return () => {
+      flushRef.current = null;
+    };
+  }, [flushRef]);
 
   const isCodeBuffer = activeFile ? kindOf(activeFile) === "code" : true;
 
