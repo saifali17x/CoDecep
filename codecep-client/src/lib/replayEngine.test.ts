@@ -207,3 +207,195 @@ describe("buildReplay — monotonic across snapshot boundaries", () => {
     }
   });
 });
+
+// ── Telemetry Capture v2 (Session 24) — exact, per-file reconstruction ───────
+// These build sessions the way the v2 capture engine actually records them:
+// every event carries the precise edit (rangeOffset / rangeLength /
+// insertedText) plus the file it happened in, and every flush carries the whole
+// workspace rather than one active buffer.
+
+/** An exact-capture event. `o`/`d`/`t` mirror Monaco's change shape. */
+const xev = (
+  timestamp: number,
+  fileName: string,
+  o: number,
+  d: number,
+  t: string,
+  extra: Record<string, unknown> = {},
+) => ({
+  timestamp,
+  timeSinceLastKeystrokeMs: 100,
+  actionType: d > t.length ? "delete" : "type",
+  charDelta: t.length - d,
+  textLength: 0,
+  fileName,
+  rangeOffset: o,
+  rangeLength: d,
+  insertedText: t,
+  ...extra,
+});
+
+/** A flush carrying the whole workspace. */
+const xsnap = (
+  flushedAt: number,
+  fileSnapshots: Record<string, string>,
+  eventCount: number,
+  active = Object.keys(fileSnapshots)[0],
+) => ({
+  flushedAt,
+  codeSnapshot: fileSnapshots[active] ?? "",
+  fileSnapshots,
+  eventCount,
+});
+
+/** Type a string one character at a time into `file`, starting at `startOffset`. */
+function typeOut(file: string, text: string, startTs: number, startOffset = 0) {
+  return [...text].map((ch, i) => xev(startTs + i * 100, file, startOffset + i, 0, ch));
+}
+
+describe("buildReplay — exact capture (v2)", () => {
+  it("reconstructs the final text byte-for-byte and reports exact:true", () => {
+    const target = "int main() { return 0; }";
+    const events = typeOut("main.cpp", target, 1000);
+    const r = buildReplay(
+      {
+        snapshots: [xsnap(9000, { "main.cpp": target }, events.length)],
+        events,
+        openedAt: 0,
+      },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(true);
+    expect(r.textAt(r.totalDurationMs)).toBe(target);
+    // ...and every intermediate state is the real prefix, not an interpolation.
+    expect(r.stateAt(r.frames[3].t).text).toBe(target.slice(0, 4));
+    expect(r.stateAt(r.frames[10].t).text).toBe(target.slice(0, 11));
+  });
+
+  it("replays deletions exactly", () => {
+    const events = [
+      ...typeOut("main.cpp", "int xy = 1;", 1000),
+      // backspace the 'y' (offset 5, one char removed)
+      xev(2000, "main.cpp", 5, 1, ""),
+    ];
+    const final = "int x = 1;";
+    const r = buildReplay(
+      { snapshots: [xsnap(9000, { "main.cpp": final }, events.length)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(true);
+    expect(r.textAt(r.totalDurationMs)).toBe(final);
+  });
+
+  it("tracks WHICH file is active over time and keeps each file's text separate", () => {
+    const a = typeOut("main.cpp", "int main(){}", 1000);
+    const b = typeOut("Student.h", "class S{};", 5000);
+    const c = typeOut("main.cpp", "//x", 9000, 12);
+    const events = [...a, ...b, ...c];
+    const files = { "main.cpp": "int main(){}//x", "Student.h": "class S{};" };
+    const r = buildReplay(
+      { snapshots: [xsnap(20000, files, events.length)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(true);
+    expect(r.files.sort()).toEqual(["Student.h", "main.cpp"]);
+
+    // During the first burst the active file is main.cpp...
+    expect(r.stateAt(r.frames[2].t).fileName).toBe("main.cpp");
+    // ...during the second it is Student.h, and main.cpp's text is NOT shown.
+    const mid = r.stateAt(r.frames[a.length + 3].t);
+    expect(mid.fileName).toBe("Student.h");
+    expect(mid.text).toBe("class S{}".slice(0, 4));
+    // ...and the switch back is reflected again.
+    expect(r.stateAt(r.frames[a.length + b.length + 1].t).fileName).toBe("main.cpp");
+    // Final state of each file is exact.
+    expect(r.finalFiles.get("main.cpp")).toBe(files["main.cpp"]);
+    expect(r.finalFiles.get("Student.h")).toBe(files["Student.h"]);
+  });
+
+  it("reconstructs exactly across a flush boundary", () => {
+    const first = typeOut("main.cpp", "int a=1;", 1000);
+    const second = typeOut("main.cpp", "int b=2;", 5000, 8);
+    const events = [...first, ...second];
+    const r = buildReplay(
+      {
+        snapshots: [
+          xsnap(4000, { "main.cpp": "int a=1;" }, first.length),
+          xsnap(9000, { "main.cpp": "int a=1;int b=2;" }, second.length),
+        ],
+        events,
+        openedAt: 0,
+      },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(true);
+    expect(r.stateAt(r.frames[first.length - 1].t).text).toBe("int a=1;");
+    expect(r.textAt(r.totalDurationMs)).toBe("int a=1;int b=2;");
+  });
+
+  it("carries the paste's REAL range and file, not an interpolated one", () => {
+    const typed = typeOut("main.cpp", "int main(){", 1000);
+    const blob = "\n    // pasted block that is comfortably over the mark threshold\n";
+    const paste = xev(5000, "main.cpp", 11, 0, blob, {
+      actionType: "paste",
+      charDelta: blob.length,
+      provenance: "external",
+    });
+    const events = [...typed, paste];
+    const final = "int main(){" + blob;
+    const r = buildReplay(
+      { snapshots: [xsnap(9000, { "main.cpp": final }, events.length)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.pasteMarks).toHaveLength(1);
+    const [m] = r.pasteMarks;
+    expect(m.fileName).toBe("main.cpp");
+    expect(m.rangeStart).toBe(11);
+    expect(m.rangeEnd).toBe(11 + blob.length);
+    expect(m.provenance).toBe("external");
+    // The pasted block is present all at once at its moment.
+    expect(r.stateAt(m.t).text).toBe(final);
+  });
+
+  it("does not claim exactness when the edits disagree with the snapshot", () => {
+    // A snapshot that the recorded edits cannot produce: the replay must heal
+    // from the recorded truth and SAY it is not exact, never show a fiction.
+    const events = typeOut("main.cpp", "abc", 1000);
+    const r = buildReplay(
+      {
+        snapshots: [xsnap(9000, { "main.cpp": "totally different" }, events.length)],
+        events,
+        openedAt: 0,
+      },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(false);
+    expect(r.inexactWindowCount).toBe(1);
+    expect(r.textAt(r.totalDurationMs)).toBe("totally different");
+  });
+
+  it("falls back to the legacy engine when any event lacks exact data", () => {
+    const events = [
+      ...typeOut("main.cpp", "int a", 1000),
+      ev(5000, "type", 3), // pre-v2 event: no rangeOffset/insertedText
+    ];
+    const r = buildReplay(
+      { snapshots: [xsnap(9000, { "main.cpp": "int a=1;" }, events.length)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(false);
+    expect(r.files).toEqual(["main.cpp"]);
+    // Legacy path still anchors the endpoint on the snapshot.
+    expect(r.textAt(r.totalDurationMs)).toBe("int a=1;");
+  });
+
+  it("exposes stateAt on legacy sessions too, so callers need no branch", () => {
+    const events = [1000, 2000].map((t) => ev(t, "type", 2));
+    const r = buildReplay(
+      { snapshots: [snap(6000, "ab", 2)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(false);
+    expect(r.stateAt(r.totalDurationMs)).toEqual({ fileName: "main.cpp", text: "ab" });
+  });
+});

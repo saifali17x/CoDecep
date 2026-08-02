@@ -4,6 +4,8 @@ import {
   computeLinearInjection,
   computeAuthorship,
   finalCodeLengthOf,
+  finalFileSnapshots,
+  isCodeFileName,
   markInconclusiveIfSubstantial,
   ROBOTIC_CV_MAX,
   LINEAR_DELETE_RATIO_MAX,
@@ -212,5 +214,165 @@ describe('markInconclusiveIfSubstantial', () => {
     const tagged = markInconclusiveIfSubstantial(assessed, ROBOTIC_INSUFFICIENT_REASON, 900)
     expect(tagged.inconclusive).toBeUndefined()
     expect(tagged.reason).toBe(assessed.reason)
+  })
+})
+
+// ── Telemetry Capture v2 (Session 24) — per-file authorship ─────────────────
+// The denominator used to be the last `codeSnapshot`, i.e. whichever single
+// file happened to be active at flush time. On a multi-file submission that
+// could be a 40-character header while the student had written a 900-character
+// program, making typedRatio meaningless. It is now the whole program.
+
+const v2ev = (
+  actionType: 'type' | 'paste' | 'delete',
+  charDelta: number,
+  fileName: string,
+) => ({
+  timestamp: 0,
+  timeSinceLastKeystrokeMs: 100,
+  actionType,
+  charDelta,
+  textLength: 0,
+  fileName,
+})
+
+describe('isCodeFileName', () => {
+  it('counts .cpp and .h as code, data files as not', () => {
+    expect(isCodeFileName('main.cpp')).toBe(true)
+    expect(isCodeFileName('Student.h')).toBe(true)
+    expect(isCodeFileName('data.txt')).toBe(false)
+    expect(isCodeFileName('scores.csv')).toBe(false)
+    expect(isCodeFileName('raw.dat')).toBe(false)
+  })
+
+  it('treats an unnamed file as code, preserving pre-v2 sessions', () => {
+    // Pre-v2 events have no fileName and were always single-file C++.
+    // Dropping them from the numerator would fabricate a paste signal.
+    expect(isCodeFileName(null)).toBe(true)
+    expect(isCodeFileName(undefined)).toBe(true)
+  })
+})
+
+describe('finalCodeLengthOf — per-file denominator', () => {
+  it('sums every CODE file, not just the active buffer', () => {
+    const log = [
+      {
+        flushedAt: 1,
+        codeSnapshot: 'short', // the active buffer happened to be tiny
+        fileSnapshots: {
+          'main.cpp': 'x'.repeat(400),
+          'Student.h': 'y'.repeat(200),
+          'Student.cpp': 'z'.repeat(300),
+        },
+        events: [],
+      },
+    ]
+    expect(finalCodeLengthOf(log)).toBe(900)
+  })
+
+  it('excludes data files from the program length', () => {
+    const log = [
+      {
+        flushedAt: 1,
+        codeSnapshot: '',
+        fileSnapshots: { 'main.cpp': 'x'.repeat(100), 'data.txt': 'y'.repeat(5000) },
+        events: [],
+      },
+    ]
+    expect(finalCodeLengthOf(log)).toBe(100)
+  })
+
+  it('falls back to the last codeSnapshot for a pre-v2 session', () => {
+    const log = [{ flushedAt: 1, codeSnapshot: 'int main(){}', events: [] }]
+    expect(finalCodeLengthOf(log)).toBe(12)
+  })
+})
+
+describe('finalFileSnapshots', () => {
+  it('returns the recorded workspace', () => {
+    const log = [
+      { flushedAt: 1, codeSnapshot: 'a', fileSnapshots: { 'main.cpp': 'a', 'd.txt': 'b' }, events: [] },
+    ]
+    expect(finalFileSnapshots(log)).toEqual({ 'main.cpp': 'a', 'd.txt': 'b' })
+  })
+
+  it('presents a pre-v2 session as a single main.cpp', () => {
+    const log = [{ flushedAt: 1, codeSnapshot: 'int main(){}', events: [] }]
+    expect(finalFileSnapshots(log)).toEqual({ 'main.cpp': 'int main(){}' })
+  })
+})
+
+describe('computeAuthorship — per-file (Session 24)', () => {
+  const codeFiles = {
+    'main.cpp': 'm'.repeat(300),
+    'Student.h': 'h'.repeat(100),
+  }
+
+  it('sums typed characters across ALL code files', () => {
+    const log = [
+      {
+        flushedAt: 1,
+        codeSnapshot: codeFiles['Student.h'],
+        fileSnapshots: codeFiles,
+        events: [v2ev('type', 300, 'main.cpp'), v2ev('type', 100, 'Student.h')],
+      },
+    ]
+    const len = finalCodeLengthOf(log)
+    expect(len).toBe(400)
+    const r = computeAuthorship(log, len)
+    expect(r.stats.typedChars).toBe(400)
+    expect(r.stats.typedRatio).toBe(1)
+    expect(r.flag).toBe(false)
+  })
+
+  it('does NOT count typing in a DATA file toward the program', () => {
+    // A student pasting a CSV of test data into data.txt is not pasting code.
+    const log = [
+      {
+        flushedAt: 1,
+        codeSnapshot: '',
+        fileSnapshots: { ...codeFiles, 'data.txt': 'd'.repeat(9000) },
+        events: [
+          v2ev('type', 400, 'main.cpp'),
+          v2ev('paste', 9000, 'data.txt'), // huge, but irrelevant to authorship
+        ],
+      },
+    ]
+    const len = finalCodeLengthOf(log)
+    expect(len).toBe(400) // data.txt excluded from the denominator
+    const r = computeAuthorship(log, len)
+    expect(r.stats.pastedChars).toBe(0) // ...and from the numerator
+    expect(r.stats.typedRatio).toBe(1)
+    expect(r.flag).toBe(false)
+  })
+
+  it('flags a session whose CODE files were pasted', () => {
+    const log = [
+      {
+        flushedAt: 1,
+        codeSnapshot: '',
+        fileSnapshots: codeFiles,
+        events: [v2ev('paste', 380, 'main.cpp'), v2ev('type', 20, 'Student.h')],
+      },
+    ]
+    const r = computeAuthorship(log, finalCodeLengthOf(log))
+    expect(r.stats.pastedChars).toBe(380)
+    expect(r.stats.typedRatio).toBeLessThan(TYPED_MIN)
+    expect(r.flag).toBe(true)
+  })
+
+  it('still works unchanged on a pre-v2 single-file session', () => {
+    const log = [
+      {
+        flushedAt: 1,
+        codeSnapshot: 'x'.repeat(200),
+        events: [
+          { timestamp: 0, timeSinceLastKeystrokeMs: 1, actionType: 'type' as const, charDelta: 200, textLength: 200 },
+        ],
+      },
+    ]
+    const r = computeAuthorship(log, finalCodeLengthOf(log))
+    expect(r.stats.typedRatio).toBe(1)
+    expect(r.flag).toBe(false)
   })
 })

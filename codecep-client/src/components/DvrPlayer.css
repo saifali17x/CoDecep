@@ -103,6 +103,39 @@
   color: var(--text-secondary);
 }
 
+/* Session 24 — which file the replay is showing at this moment, plus how
+   faithful the reconstruction is. */
+.dvr-files {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.dvr-file-tab {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-xs, 11px);
+  padding: 2px 8px;
+  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--border, #30363d);
+  color: var(--text-muted, #6e7681);
+  background: transparent;
+}
+
+.dvr-file-tab.active {
+  color: var(--text, #e6edf3);
+  border-color: var(--accent, #388bfd);
+  background: var(--surface-2, #21262d);
+}
+
+.dvr-fidelity {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted, #6e7681);
+  cursor: help;
+}
+
 .dvr-severity-note {
   display: block;
   width: 100%;

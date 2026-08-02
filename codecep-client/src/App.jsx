@@ -125,6 +125,7 @@ function App({
   const sessionIdRef = useRef(null);
   const sessionStatusRef = useRef(INITIAL_STATUS);
   const codeRef = useRef(initialCode);
+  const filesRef = useRef(files);
 
   // Focus-gated timer — counts milliseconds while the tab is visible
   const engagedTimeRef = useRef(0);   // banked ms from past focus windows
@@ -134,6 +135,13 @@ function App({
   useEffect(() => {
     codeRef.current = code;
   }, [code]);
+
+  // Session 24 — the flush needs EVERY file, not just the active buffer, and
+  // it runs from a stale-closure interval, so the workspace is mirrored into a
+  // ref exactly as `code` is.
+  useEffect(() => {
+    filesRef.current = files;
+  }, [files]);
 
   // Keep sessionStatusRef in sync
   useEffect(() => {
@@ -263,9 +271,19 @@ function App({
     const currentStatus = sessionStatusRef.current;
     const currentSessionId = sessionIdRef.current;
     const currentCode = codeRef.current;
+    const currentFiles = filesRef.current ?? [];
 
     if (currentStatus === "SUBMITTED") return;
     if (!currentSessionId) return;
+
+    // Per-file snapshots (Session 24). The single `codeSnapshot` below is the
+    // ACTIVE buffer only, which made the authorship denominator and the DVR
+    // follow whichever file happened to be open. `fileSnapshots` is the whole
+    // workspace and is the source of truth going forward; `codeSnapshot` is
+    // kept so pre-v2 readers (and the legacy /playback route) still work.
+    const fileSnapshots = Object.fromEntries(
+      currentFiles.map((f) => [f.name, f.content]),
+    );
 
     // Banked time + time accrued in the current (still-open) focus window
     const engagedTimeMs =
@@ -281,6 +299,7 @@ function App({
           studentId: STUDENT_ID_EFFECTIVE,
           chunk,
           codeSnapshot: currentCode,
+          fileSnapshots,
           engagedTimeMs,
         }),
       });

@@ -74,6 +74,9 @@ export const telemetrySubmitSchema = z.looseObject({
   studentId: z.string().optional(),
   chunk: z.array(z.unknown()),
   codeSnapshot: z.string().optional(),
+  // Session 24 — per-file snapshots { fileName: fullText }. Optional so a
+  // pre-v2 client (and /legacy) still validates.
+  fileSnapshots: z.record(z.string(), z.string()).optional(),
   engagedTimeMs: z.number().optional(),
 })
 

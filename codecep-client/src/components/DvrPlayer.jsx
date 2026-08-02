@@ -3,6 +3,7 @@ import Editor from "@monaco-editor/react";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import { buildReplay } from "../lib/replayEngine";
+import { languageOf } from "../lib/workspace";
 import {
   metricASeverity,
   metricBSeverity,
@@ -28,6 +29,14 @@ const METRIC_LABELS = {
 };
 const SPEEDS = [1, 2, 5, 10, 25];
 const PASTE_FLASH_MS = 1200;
+
+// Session 24 — the replay says which kind it is, because the two are not
+// equally strong evidence and the instructor should know which they're seeing.
+const FIDELITY_HINT = {
+  exact: "Reconstructed character-for-character from the recorded edits, and verified against every 30s snapshot.",
+  approx:
+    "This session predates exact keystroke capture (or its snapshots disagreed with the recorded edits). Timing and paste moments are exact; character order within a typed burst is approximated.",
+};
 
 // Session 22 (part 2): the live Tier-1 feed is now also summarised per session.
 const TIER1_LABELS = {
@@ -95,6 +104,50 @@ function Tier1Row({ summary }) {
           unknown, not zero.
         </span>
       )}
+    </div>
+  );
+}
+
+// Session 24 (Change B2) — the submit-time sweep over EVERY code file. Live
+// validation only ever saw the active buffer, so this is what closes the
+// "hide it in an unfocused file" gap. Absent on sessions submitted before v2,
+// which must read as "not checked", never as "clean".
+function AstAuditRow({ audit }) {
+  if (!audit) return null;
+  const { violations = [], checkedFiles = [], flag } = audit;
+  const color = flag ? LEVEL_COLORS.red : LEVEL_COLORS.green;
+  const byFile = violations.reduce((acc, v) => {
+    (acc[v.fileName] ??= []).push(v);
+    return acc;
+  }, {});
+  return (
+    <div className="dvr-tier1">
+      <span className="dvr-tier1-title">All-files construct check (at submit):</span>
+      <span
+        className="dvr-pill"
+        style={{ color, borderColor: color }}
+        title={
+          checkedFiles.length === 0
+            ? "No code files were present to check."
+            : `Checked ${checkedFiles.join(", ")} against the ${audit.allowlistSource} allowlist`
+        }
+      >
+        {checkedFiles.length === 0
+          ? "no code files"
+          : flag
+            ? `${violations.length} disallowed construct(s) — flagged for review`
+            : `${checkedFiles.length} file(s) clean`}
+      </span>
+      {Object.entries(byFile).map(([file, vs]) => (
+        <span
+          key={file}
+          className="dvr-pill"
+          style={{ color: LEVEL_COLORS.red, borderColor: LEVEL_COLORS.red }}
+          title={vs.map((v) => `line ${v.line}: ${v.nodeType}`).join("\n")}
+        >
+          {file}: {[...new Set(vs.map((v) => v.nodeType))].join(", ")}
+        </span>
+      ))}
     </div>
   );
 }
@@ -180,12 +233,28 @@ export default function DvrPlayer({ sessionId }) {
     return () => cancelAnimationFrame(raf);
   }, [playing, speed, skipIdle, replay]);
 
-  const text = replay ? replay.textAt(t) : "";
+  // Session 24: the replay is file-aware. `stateAt` answers BOTH which file was
+  // being edited at T and that file's exact text, so a file switch reads as a
+  // labeled change rather than the content mysteriously jumping.
+  const state = useMemo(
+    () => (replay ? replay.stateAt(t) : { fileName: null, text: "" }),
+    [replay, t],
+  );
+  const text = state.text;
+  const activeFileName = state.fileName;
 
   // ── Paste highlight: flash the pasted range for ~1.2s after its moment ────
+  // Scoped to the file the paste happened in — a range from another file would
+  // decorate arbitrary characters in the one on screen.
   const activePaste = useMemo(
-    () => replay?.pasteMarks.find((m) => t >= m.t && t <= m.t + PASTE_FLASH_MS) ?? null,
-    [replay, t],
+    () =>
+      replay?.pasteMarks.find(
+        (m) =>
+          t >= m.t &&
+          t <= m.t + PASTE_FLASH_MS &&
+          (m.fileName == null || m.fileName === activeFileName),
+      ) ?? null,
+    [replay, t, activeFileName],
   );
   const lastPaste = useMemo(() => {
     if (!replay) return null;
@@ -289,6 +358,7 @@ export default function DvrPlayer({ sessionId }) {
       </div>
 
       <Tier1Row summary={data.tier1Summary} />
+      <AstAuditRow audit={forensicsResults?.astAudit} />
 
       {duration === 0 ? (
         <div className="dvr-empty">
@@ -360,9 +430,29 @@ export default function DvrPlayer({ sessionId }) {
             </div>
           </div>
 
+          {/* Which file the student was editing at this moment. The strip
+              exists even for single-file sessions so the reading is never
+              ambiguous, and it is what turns a mid-replay content jump into an
+              explained file switch. */}
+          <div className="dvr-files">
+            {(replay.files ?? []).map((name) => (
+              <span
+                key={name}
+                className={`dvr-file-tab ${name === activeFileName ? "active" : ""}`}
+                title={name === activeFileName ? `Editing ${name} at this moment` : name}
+              >
+                {name}
+              </span>
+            ))}
+            <span className="dvr-fidelity" title={FIDELITY_HINT[replay.exact ? "exact" : "approx"]}>
+              {replay.exact ? "exact replay" : "approximate replay"}
+            </span>
+          </div>
+
           <Editor
             height="400px"
-            language="cpp"
+            path={activeFileName ?? undefined}
+            language={languageOf(activeFileName ?? "main.cpp")}
             value={text}
             theme="vs-dark"
             onMount={(editor, monaco) => {

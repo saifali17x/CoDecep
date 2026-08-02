@@ -30,6 +30,8 @@ import {
   computeRoboticVariance,
   computeAuthorship,
   finalCodeLengthOf,
+  finalFileSnapshots,
+  isCodeFileName,
   markInconclusiveIfSubstantial,
   LINEAR_INSUFFICIENT_REASON,
   ROBOTIC_INSUFFICIENT_REASON,
@@ -168,15 +170,21 @@ const forensicsWorker = new Worker(
       finalCodeLength,
     )
 
+    // Change B2 (Session 24): every code file in the final workspace is parsed
+    // here, so a forbidden construct can no longer hide in a file that was
+    // never the active buffer.
+    const astAudit = await auditCodeFilesAtSubmit(session.playback_log, session.assignmentId)
+
     await prisma.session.update({
       where: { id: sessionId },
-      data: { forensicsResults: { metricA, metricB, metricC, authorship } },
+      data: { forensicsResults: { metricA, metricB, metricC, authorship, astAudit } },
     })
 
     console.log(`[FORENSICS] Session ${sessionId} processed — metricA runCount=${runCount} flag=${metricA.flag}`)
     console.log(`[FORENSICS] session ${sessionId} metricB flag=${metricB.flag} deleteRatio=${metricB.stats.deleteRatio.toFixed(3)} singleCharRatio=${metricB.stats.singleCharTypeRatio.toFixed(3)}${metricB.inconclusive ? ' inconclusive=true' : ''}`)
     console.log(`[FORENSICS] session ${sessionId} metricC flag=${metricC.flag} cv=${metricC.stats.cv} sampleCount=${metricC.stats.sampleCount}${metricC.inconclusive ? ' inconclusive=true' : ''}`)
     console.log(`[FORENSICS] session ${sessionId} authorship flag=${authorship.flag} finalCodeLength=${finalCodeLength} typedRatio=${authorship.stats.typedRatio} pastedRatio=${authorship.stats.pastedRatio}`)
+    console.log(`[FORENSICS] session ${sessionId} astAudit flag=${astAudit.flag} files=[${astAudit.checkedFiles.join(', ')}] violations=${astAudit.violations.length} (allowlist: ${astAudit.allowlistSource})`)
   },
   { connection: redisConnection },
 )
@@ -196,7 +204,15 @@ app.use(cors({
   },
 }))
 
-app.use(express.json())
+// Session 24 — the default 100kb JSON limit is no longer enough. Telemetry
+// Capture v2 stores the exact inserted text per keystroke, so a 30s flush is
+// now tens of kilobytes of events plus a full per-file snapshot of the
+// workspace, and a single large paste can be ~100kb on its own. Exceeding the
+// limit was silent from the student's side: Express answered 413 and the whole
+// window of exam evidence was dropped. Sized well above the realistic worst
+// case (a fast typist for 30s, plus the biggest paste the capture engine will
+// store) rather than tuned to the average.
+app.use(express.json({ limit: '5mb' }))
 
 // ── POST /api/session/create ──────────────────────────────────────────────
 app.post('/api/session/create', validate(sessionCreateSchema), async (req: Request, res: Response) => {
@@ -240,16 +256,25 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
 })
 
 // ── POST /api/telemetry/submit ─────────────────────────────────────────────
+// Session 24 (Telemetry Capture v2) — events now also carry WHAT changed and
+// WHERE, plus which file they belong to. The size-only fields are unchanged so
+// every existing metric keeps working; the v2 fields are all optional so a
+// pre-v2 client, and every session already in the database, stay valid.
 interface KeystrokeEvent {
   timestamp: number
   timeSinceLastKeystrokeMs: number
   actionType: 'type' | 'paste' | 'delete'
   charDelta: number
   textLength: number
+  fileName?: string | null
+  rangeOffset?: number
+  rangeLength?: number
+  insertedText?: string
+  changes?: { o: number; d: number; t: string }[]
 }
 
 app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: Request, res: Response) => {
-  const { sessionId, chunk, codeSnapshot, engagedTimeMs } = req.body
+  const { sessionId, chunk, codeSnapshot, fileSnapshots, engagedTimeMs } = req.body
 
   if (!Array.isArray(chunk) || chunk.length === 0) {
     res.status(400).json({ error: 'Invalid payload: sessionId and non-empty chunk are required.' })
@@ -260,7 +285,11 @@ app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: R
 
   const playbackEntry = {
     flushedAt: Date.now(),
+    // The ACTIVE buffer, kept for pre-v2 readers.
     codeSnapshot: codeSnapshot ?? '',
+    // The WHOLE workspace — the source of truth from v2 onward. Absent on a
+    // pre-v2 payload, which readers treat as a single default file.
+    ...(fileSnapshots && typeof fileSnapshots === 'object' ? { fileSnapshots } : {}),
     events,
   }
 
@@ -384,6 +413,9 @@ app.get(
     const snapshots = log.map((entry) => ({
       flushedAt: entry.flushedAt,
       codeSnapshot: entry.codeSnapshot ?? '',
+      // Session 24: the whole workspace at this flush. Undefined on pre-v2
+      // sessions — the replay engine falls back to the single codeSnapshot.
+      fileSnapshots: entry.fileSnapshots ?? null,
       eventCount: Array.isArray(entry.events) ? entry.events.length : 0,
     }))
     const events = log.flatMap((entry) => (Array.isArray(entry.events) ? entry.events : []))
@@ -482,6 +514,73 @@ function resolveWeekAllowlist(
   return bestList
 }
 
+// Shared allowlist resolution — used by the live /api/ast/validate route AND
+// by the submit-time audit in the forensics worker, so both judge a file
+// against exactly the same construct set.
+// A `function` declaration (not a const arrow) so the worker, which is defined
+// earlier in this file, can call it; it only reads week1Allowlist at call time.
+async function resolveAllowlistFor(
+  assignmentId: string | null | undefined,
+): Promise<{ list: string[]; source: string }> {
+  if (typeof assignmentId !== 'string' || assignmentId.length === 0) {
+    return { list: week1Allowlist, source: 'default' }
+  }
+  try {
+    const assignment = await prisma.assignment.findUnique({
+      where: { id: assignmentId },
+      include: { class: true },
+    })
+    if (assignment?.class?.allowlist) {
+      const resolved = resolveWeekAllowlist(assignment.class.allowlist, assignment.week)
+      if (resolved) return { list: resolved, source: `class allowlist week${assignment.week}` }
+    }
+  } catch (err) {
+    console.error('[AST] Allowlist lookup failed — using default:', err instanceof Error ? err.message : err)
+  }
+  return { list: week1Allowlist, source: 'default' }
+}
+
+// ── Submit-time AST audit over EVERY code file (Session 24, Change B2) ──────
+// Live validation only ever sees the ACTIVE buffer, so before v2 a forbidden
+// construct could sit in an unfocused file and never be checked. EditorPane now
+// validates a file when the student switches away from it, and this is the
+// backstop: at submit, every .cpp/.h in the final workspace is parsed. Data
+// files are never parsed — the C++ grammar would report prose as violations.
+// Result is stored on forensicsResults for instructor review; like every other
+// metric it is a signal, not a verdict.
+async function auditCodeFilesAtSubmit(playbackLog: unknown, assignmentId: string | null) {
+  const snapshots = finalFileSnapshots(playbackLog)
+  const codeFiles = Object.entries(snapshots).filter(
+    ([name, text]) => isCodeFileName(name) && typeof text === 'string' && text.trim().length > 0,
+  )
+  if (codeFiles.length === 0) {
+    return { checkedFiles: [], violations: [], flag: false, allowlistSource: 'none', reason: null }
+  }
+
+  const { list, source } = await resolveAllowlistFor(assignmentId)
+  const violations: { fileName: string; nodeType: string; line: number; column: number; snippet: string }[] = []
+
+  for (const [fileName, text] of codeFiles) {
+    try {
+      const result = await validateAST(text, list)
+      for (const v of result.violations) violations.push({ fileName, ...v })
+    } catch (err) {
+      console.error(`[FORENSICS] AST audit failed for ${fileName}:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  const flag = violations.length > 0
+  return {
+    checkedFiles: codeFiles.map(([name]) => name),
+    violations,
+    flag,
+    allowlistSource: source,
+    reason: flag
+      ? `${violations.length} disallowed construct(s) across ${new Set(violations.map((v) => v.fileName)).size} file(s) — probabilistic signal requiring instructor review`
+      : null,
+  }
+}
+
 app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, res: Response) => {
   const { code, assignmentId } = req.body
 
@@ -495,25 +594,8 @@ app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, 
   // the hardcoded week1Allowlist when there is no assignment / the class has
   // no syllabus yet — keeps the /legacy dev flow byte-for-byte compatible.
   // Failures here must never break validation, so lookup errors degrade too.
-  let allowlist = week1Allowlist
-  let allowlistSource = 'default'
-  if (typeof assignmentId === 'string' && assignmentId.length > 0) {
-    try {
-      const assignment = await prisma.assignment.findUnique({
-        where: { id: assignmentId },
-        include: { class: true },
-      })
-      if (assignment?.class?.allowlist) {
-        const resolved = resolveWeekAllowlist(assignment.class.allowlist, assignment.week)
-        if (resolved) {
-          allowlist = resolved
-          allowlistSource = `class allowlist week${assignment.week}`
-        }
-      }
-    } catch (err) {
-      console.error('[AST] Allowlist lookup failed — using default:', err instanceof Error ? err.message : err)
-    }
-  }
+  // Shared with the submit-time audit so both judge against the same set.
+  const { list: allowlist, source: allowlistSource } = await resolveAllowlistFor(assignmentId)
 
   const result = await validateAST(code, allowlist)
   debugLog(`[AST] Validated ${result.violations.length} violation(s) — isValid: ${result.isValid} (allowlist: ${allowlistSource})`)

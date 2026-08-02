@@ -8,16 +8,57 @@ import "./EditorPane.css";
 const PASTE_THRESHOLD = 50; // charDelta > 50 triggers ILLEGAL_PASTE (per CLAUDE.md)
 const CONTENT_HISTORY_LIMIT = 50; // bounded rolling history of session content
 
-function classifyAction(delta) {
-  if (delta < 0) return "delete";
-  if (delta > 4) return "paste";
-  return "type";
-}
+// ── Telemetry Capture v2 (Session 24) ────────────────────────────────────────
+// Two changes to how a keystroke is recorded, both in this file.
+//
+// EXACT CAPTURE. Monaco's content-change event carries the precise edit list —
+// `{ rangeOffset, rangeLength, text }` per change — so an event now records
+// WHAT changed and WHERE, not merely how much. That is what lets the DVR replay
+// a session character-for-character instead of interpolating between 30s
+// snapshots. The old size-only fields (charDelta, textLength) are KEPT so every
+// existing metric keeps working unchanged.
+//
+// PASTE vs AUTO-INSERT. The old rule was `charDelta > 4 → paste`, which counted
+// Monaco's own auto-indent, bracket auto-closing and autocomplete as pasted
+// text. That dragged a hand-typed session's authorship down to ~0.54 typed and
+// is precisely why TYPED_MIN had to stay conservatively low. Now the ONLY thing
+// that makes an event a paste is Monaco's `onDidPaste` firing for it. Editor-
+// generated insertions are what they actually are: authored typing.
+
+// A paste is attributed to the most recent insertion event within this window.
+// Monaco fires onDidPaste immediately after the content change it belongs to,
+// so this is generous; it exists so a stray onDidPaste can never retro-label an
+// unrelated older event.
+const PASTE_ATTRIBUTION_WINDOW_MS = 250;
+
+// Exact capture stores inserted text verbatim. A pathological single insertion
+// (a megabyte pasted in) would bloat the JSONB row, so the stored text is
+// capped and the event marked truncated. The SIZE fields stay exact either way,
+// so no metric is affected — only replay fidelity for that one event.
+const MAX_INSERTED_TEXT_CHARS = 100_000;
 
 // Whitespace-insensitive comparison so trivial formatting differences don't
 // misclassify an internal re-paste as external.
 function normalizeContent(text) {
   return text.replace(/\s+/g, " ").trim();
+}
+
+// Normalize Monaco's change list into the compact stored shape.
+// `o` = offset in the pre-change text, `d` = chars deleted, `t` = text inserted.
+// Monaco delivers changes sorted end-to-start so they can be applied in order
+// without re-basing offsets; that order is preserved here and relied on by the
+// replay engine.
+function normalizeChanges(monacoChanges) {
+  return (monacoChanges ?? []).map((c) => {
+    const text = typeof c.text === "string" ? c.text : "";
+    const truncated = text.length > MAX_INSERTED_TEXT_CHARS;
+    return {
+      o: c.rangeOffset,
+      d: c.rangeLength,
+      t: truncated ? text.slice(0, MAX_INSERTED_TEXT_CHARS) : text,
+      ...(truncated ? { trunc: text.length } : {}),
+    };
+  });
 }
 
 export default function EditorPane({
@@ -57,16 +98,35 @@ export default function EditorPane({
   useEffect(() => {
     prevCode.current = code;
     lastKeystrokeTime.current = Date.now();
+    // A pending change belongs to the file it happened in — never let a paste
+    // in the newly-opened file be attributed to the previous file's last edit.
+    lastChangeRef.current = null;
+    // Change B2 (Session 24): validate the file being LEFT. Live validation
+    // only ever sees the active buffer, so before v2 a forbidden construct
+    // could sit in an unfocused file untouched. Submit-time validation is the
+    // backstop; this is the live half.
+    const leaving = prevFileRef.current;
+    if (leaving && leaving.name !== activeFile) validateFileNow(leaving.name, leaving.code);
+    prevFileRef.current = { name: activeFile, code };
     // Intentionally keyed on the FILE, not the code: re-anchoring on every
     // keystroke would zero out every charDelta.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFile]);
+
+  // Mirrors the active file so the effect above can validate the one just left.
+  // Updated on every keystroke so the validated text is current, not stale.
+  useEffect(() => {
+    if (prevFileRef.current?.name === activeFile) prevFileRef.current.code = code;
+  }, [code, activeFile]);
 
   // Paste provenance (internal vs external) — session-local content history.
   // We compare pasted text against what THIS session has already contained;
   // we never try to read the OS clipboard's origin.
   const lastPastedTextRef = useRef(null); // set by Monaco onDidPaste, consumed once
   const sessionContentRef = useRef([]); // normalized full-content snapshots
+  // The most recent content change, held so onDidPaste can retroactively
+  // upgrade it from 'type' to 'paste' (see attributePaste).
+  const lastChangeRef = useRef(null);
 
   function pushSessionContent(text) {
     const norm = normalizeContent(text);
@@ -83,17 +143,22 @@ export default function EditorPane({
     return sessionContentRef.current.some((chunk) => chunk.includes(needle));
   }
 
-  // AST_VIOLATION debounce state
+  // AST_VIOLATION debounce state. The signature map is keyed by FILE
+  // ({ [fileName]: "file:nodeType:line" }) so a violation in one file cannot
+  // suppress a different violation in another.
   const debounceTimer = useRef(null);
-  const lastViolationSig = useRef(null); // "nodeType:line" — prevents alert spam
+  const lastViolationSig = useRef({});
   const isSubmittedRef = useRef(isSubmitted); // live mirror for async timeout callbacks
+  // The file the editor was showing before the current one, with its text, so
+  // switching away can validate what was left behind.
+  const prevFileRef = useRef(null);
 
   useEffect(() => {
     isSubmittedRef.current = isSubmitted;
     if (isSubmitted) {
       // Disarm any pending debounce immediately on Submit (Immune Phase)
       clearTimeout(debounceTimer.current);
-      lastViolationSig.current = null;
+      lastViolationSig.current = {};
     }
   }, [isSubmitted]);
 
@@ -113,58 +178,149 @@ export default function EditorPane({
 
   const isCodeBuffer = activeFile ? kindOf(activeFile) === "code" : true;
 
-  function handleChange(val) {
+  // ── AST validation (shared by the live debounce and switch-away) ───────────
+  // De-duplication is keyed per FILE now: two files can legitimately hold
+  // different violations at once, and a single shared signature would let the
+  // second one be swallowed as a repeat of the first.
+  async function validateFileNow(fileName, sourceText) {
+    if (isSubmittedRef.current) return; // Immune Phase
+    if (!fileName || kindOf(fileName) !== "code") return; // never parse data files
+    try {
+      const res = await fetch("http://localhost:3001/api/ast/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: sourceText,
+          ...(assignmentId ? { assignmentId } : {}),
+        }),
+      });
+      const { isValid, violations } = await res.json();
+      if (!isValid && violations.length > 0) {
+        const sig = `${fileName}:${violations[0].nodeType}:${violations[0].line}`;
+        if (sig !== lastViolationSig.current[fileName]) {
+          lastViolationSig.current[fileName] = sig;
+          const payload = {
+            type: "AST_VIOLATION",
+            studentId,
+            sessionId: sessionIdRef?.current ?? null,
+            timestamp: Date.now(),
+            detail: `${violations.length} violation(s) in ${fileName}: ${violations[0]?.nodeType ?? "unknown"}`,
+          };
+          debugLog("[EMIT] AST_VIOLATION", payload);
+          socket.emit("alert", payload);
+        }
+      } else {
+        // This file is clean now — reset so its next violation alerts afresh.
+        delete lastViolationSig.current[fileName];
+      }
+    } catch {
+      // Silently swallow — do not emit on network/API errors
+    }
+  }
+
+  function handleChange(val, monacoEvent) {
     const next = val ?? "";
     const now = Date.now();
     const timeSinceLastKeystrokeMs = now - lastKeystrokeTime.current;
     lastKeystrokeTime.current = now;
 
     const contentBeforeChange = prevCode.current;
-    const charDelta = next.length - contentBeforeChange.length;
-    const actionType = classifyAction(charDelta);
     prevCode.current = next;
+
+    const changes = normalizeChanges(monacoEvent?.changes);
+    const insertedChars = changes.reduce((n, c) => n + (c.trunc ?? c.t.length), 0);
+    const deletedChars = changes.reduce((n, c) => n + c.d, 0);
+
+    // charDelta and textLength are derived from the CHANGE LIST, not from
+    // diffing the editor's current value. @monaco-editor/react reads
+    // `editor.getValue()` when its listener runs, which under fast input can
+    // already be ahead of the change being reported — that produced events
+    // whose size fields contradicted their own edit (an insertion with an
+    // unchanged textLength). The change list is always self-consistent, so
+    // deriving from it keeps every size-based metric (B, authorship) honest and
+    // keeps the replay's offsets and sizes describing the same edit.
+    const charDelta = changes.length > 0 ? insertedChars - deletedChars : next.length - contentBeforeChange.length;
+    const textLength = changes.length > 0 ? contentBeforeChange.length + charDelta : next.length;
+
+    // Provisional classification. NOTE the deliberate absence of a
+    // "big insertion = paste" rule: a multi-char insertion is authored typing
+    // until onDidPaste says otherwise (see attributePaste). Only a net
+    // deletion is decided here and never revised.
+    const actionType = charDelta < 0 ? "delete" : "type";
 
     const event = {
       timestamp: now,
       timeSinceLastKeystrokeMs,
       actionType,
       charDelta,
-      textLength: next.length,
+      textLength,
+      // ── v2 exact-capture fields ──
+      // Kept deliberately lean: every keystroke is one JSONB object, so a
+      // redundant field costs bytes on every event of every exam. Anything
+      // derivable (inserted/deleted counts) is derived at read time instead.
+      fileName: activeFile ?? null,
+      // Single-change events (every keystroke, every ordinary paste) store the
+      // edit flat; the multi-change case (multi-cursor, replace-all) keeps the
+      // full list. The replay engine reads both through one helper.
+      ...(changes.length === 1
+        ? {
+            rangeOffset: changes[0].o,
+            rangeLength: changes[0].d,
+            insertedText: changes[0].t,
+            ...(changes[0].trunc ? { insertedTextTruncated: changes[0].trunc } : {}),
+          }
+        : changes.length > 1
+          ? { changes }
+          : {}),
     };
     telemetryBuffer.current.push(event);
 
-    // Tier 1 alert — ILLEGAL_PASTE (both modes; guard against Submit).
-    // Provenance-aware: an INTERNAL paste (text the session already contained)
-    // is recorded in telemetry but never alerts; only EXTERNAL (novel) pastes
-    // fire. Provenance can only SUPPRESS a would-be alert, never add one.
-    if (!isSubmitted && actionType === "paste" && charDelta > PASTE_THRESHOLD) {
-      // The pre-paste content is legitimate session history — bank it now so
-      // re-pasting something typed earlier is recognized as internal.
-      pushSessionContent(contentBeforeChange);
-      // Monaco fires the content-change event (this handler) BEFORE onDidPaste,
-      // so defer one tick to let onDidPaste record the pasted text first.
-      setTimeout(() => {
-        if (isSubmittedRef.current) return; // Immune Phase still wins
-        const pastedText = lastPastedTextRef.current;
-        lastPastedTextRef.current = null; // consume once
-        // No paste-event text (drag-drop, programmatic insert) → treat as
-        // external — the safer default, identical to the old behavior.
-        const provenance =
-          pastedText !== null && isInternalPaste(pastedText) ? "internal" : "external";
-        event.provenance = provenance; // tagged in telemetry either way
+    // Hand the paste attributor everything it needs, so when onDidPaste arrives
+    // it can upgrade this event without re-deriving state.
+    lastChangeRef.current = { event, contentBeforeChange, insertedChars, at: now };
 
+    // ── Bulk insertions that onDidPaste never sees ──────────────────────────
+    // Not every way to dump text into the editor fires a paste event:
+    // drag-and-drop from another window, and programmatic inserts, do not. If
+    // classification rested on onDidPaste ALONE, those would silently become
+    // "typing" — a real loss of detection, so they are caught here instead.
+    //
+    // The gate is PASTE_THRESHOLD (50), the same size that has always defined a
+    // reportable paste. That is what makes this safe: Monaco's auto-indent,
+    // bracket auto-closing and word autocomplete insert a handful of characters,
+    // never fifty, so the noise this change set out to remove stays removed
+    // while every forensically interesting bulk insertion is still caught.
+    //
+    // Undo/redo is excluded: restoring text the student already wrote is a
+    // revision, not an act of authorship or of pasting.
+    const isUndoRedo = Boolean(monacoEvent?.isUndoing || monacoEvent?.isRedoing);
+    if (isUndoRedo) event.revision = true;
+    if (insertedChars > PASTE_THRESHOLD && !isUndoRedo) {
+      setTimeout(() => {
+        // onDidPaste already claimed it — nothing to do.
+        if (event.actionType === "paste") return;
+        const insertedText = changes.map((c) => c.t).join("");
+        pushSessionContent(contentBeforeChange);
+        event.actionType = "paste";
+        // Exact capture means the inserted text is now known even without a
+        // paste event, so an internal drag-MOVE of the student's own code can
+        // be recognised instead of being reported as novel. Provenance can
+        // only ever suppress an alert, never create one.
+        const provenance = isInternalPaste(insertedText) ? "internal" : "external";
+        event.provenance = provenance;
+        if (isSubmittedRef.current) return; // Immune Phase
         if (provenance === "internal") {
-          debugLog(`[PASTE] internal paste (+${charDelta} chars) — no alert`);
+          debugLog(`[PASTE] internal bulk insert (+${event.charDelta} chars) — no alert`);
           return;
         }
         const payload = {
           type: "ILLEGAL_PASTE",
           studentId,
           sessionId: sessionIdRef?.current ?? null,
-          timestamp: now,
-          detail: `external paste, +${charDelta} chars`,
+          timestamp: event.timestamp,
+          detail: `external paste, +${event.charDelta} chars`,
         };
-        debugLog("[EMIT] ILLEGAL_PASTE", payload);
+        debugLog("[EMIT] ILLEGAL_PASTE (no paste event — drag-drop or programmatic)", payload);
         socket.emit("alert", payload);
       }, 0);
     }
@@ -179,50 +335,75 @@ export default function EditorPane({
       return;
     }
     const codeAtKeystroke = next;
-    debounceTimer.current = setTimeout(async () => {
-      if (isSubmittedRef.current) return;
-      try {
-        const res = await fetch("http://localhost:3001/api/ast/validate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: codeAtKeystroke, ...(assignmentId ? { assignmentId } : {}) }),
-        });
-        const { isValid, violations } = await res.json();
-        if (!isValid && violations.length > 0) {
-          const sig = `${violations[0].nodeType}:${violations[0].line}`;
-          if (sig !== lastViolationSig.current) {
-            lastViolationSig.current = sig;
-            const payload = {
-              type: "AST_VIOLATION",
-              studentId,
-              sessionId: sessionIdRef?.current ?? null,
-              timestamp: Date.now(),
-              detail: `${violations.length} violation(s): ${violations[0]?.nodeType ?? "unknown"}`,
-            };
-            debugLog("[EMIT] AST_VIOLATION", payload);
-            socket.emit("alert", payload);
-          }
-        } else {
-          // Code is now valid — reset so next violation triggers a fresh alert
-          lastViolationSig.current = null;
-        }
-      } catch {
-        // Silently swallow — do not emit on network/API errors
-      }
-    }, 1500);
+    debounceTimer.current = setTimeout(
+      () => validateFileNow(activeFile, codeAtKeystroke),
+      1500,
+    );
 
     onChange(next);
+  }
+
+  // ── Paste attribution (Change D) ───────────────────────────────────────────
+  // The ONLY promotion path from 'type' to 'paste'. Called from onDidPaste,
+  // which Monaco fires immediately after the content change the paste caused —
+  // so the pending event from handleChange is the one being paid for.
+  //
+  // Ordering is no longer load-bearing: the old code deferred a tick because
+  // the content change arrives BEFORE onDidPaste, and it needed the pasted text
+  // to decide provenance. Upgrading the already-buffered event retroactively
+  // works whichever order the two events arrive in, and removes the setTimeout.
+  function attributePaste(pastedText) {
+    const pending = lastChangeRef.current;
+    if (!pending) return;
+    // Only an insertion can be a paste, and only a RECENT one — a stray
+    // onDidPaste must never retro-label an unrelated earlier event.
+    if (pending.insertedChars <= 0) return;
+    if (Date.now() - pending.at > PASTE_ATTRIBUTION_WINDOW_MS) return;
+
+    const { event, contentBeforeChange } = pending;
+    lastChangeRef.current = null; // attribute once
+
+    event.actionType = "paste";
+
+    // Provenance is unchanged in meaning: an INTERNAL paste is text this
+    // session already contained (recorded, never alerted); an EXTERNAL paste is
+    // novel. Provenance can only SUPPRESS an alert, never add one.
+    pushSessionContent(contentBeforeChange);
+    const provenance =
+      pastedText !== null && isInternalPaste(pastedText) ? "internal" : "external";
+    event.provenance = provenance;
+
+    // Tier 1 alert — ILLEGAL_PASTE. Same size gate and same Immune Phase guard
+    // as before; only the classification feeding it got more accurate.
+    if (isSubmittedRef.current) return;
+    if (event.charDelta <= PASTE_THRESHOLD) return;
+    if (provenance === "internal") {
+      debugLog(`[PASTE] internal paste (+${event.charDelta} chars) — no alert`);
+      return;
+    }
+    const payload = {
+      type: "ILLEGAL_PASTE",
+      studentId,
+      sessionId: sessionIdRef?.current ?? null,
+      timestamp: event.timestamp,
+      detail: `external paste, +${event.charDelta} chars`,
+    };
+    debugLog("[EMIT] ILLEGAL_PASTE", payload);
+    socket.emit("alert", payload);
   }
 
   function handleMount(editor) {
     editor.onDidChangeCursorPosition((e) => {
       onCursorChange(e.position.lineNumber, e.position.column);
     });
-    // Capture the actual pasted text (not just its size) for provenance
-    // classification. e.range is the range of the freshly-inserted text.
+    // The single source of truth for "this was a real clipboard paste".
+    // e.range is the range of the freshly-inserted text, so the model yields
+    // the exact pasted string for provenance classification.
     editor.onDidPaste((e) => {
       const model = editor.getModel();
-      if (model) lastPastedTextRef.current = model.getValueInRange(e.range);
+      const pastedText = model ? model.getValueInRange(e.range) : null;
+      lastPastedTextRef.current = pastedText;
+      attributePaste(pastedText);
     });
   }
 

@@ -34,12 +34,39 @@ export interface PlaybackEvent {
   actionType: 'type' | 'paste' | 'delete'
   charDelta: number
   textLength: number
+  // Session 24 (Telemetry Capture v2). All optional: pre-v2 sessions in the
+  // database have none of them, and every metric below must keep working on
+  // those rows exactly as it did before.
+  fileName?: string | null
+  rangeOffset?: number
+  rangeLength?: number
+  insertedText?: string
+  changes?: { o: number; d: number; t: string }[]
 }
 
 export interface PlaybackEntry {
   flushedAt: number
   codeSnapshot: string
+  /** Session 24 — the whole workspace at this flush. Absent pre-v2. */
+  fileSnapshots?: Record<string, string> | null
   events: PlaybackEvent[]
+}
+
+// ── Which files count as CODE ──────────────────────────────────────────────
+// Authorship is a statement about the submitted PROGRAM, so data files are
+// excluded: a student legitimately pasting a CSV of test data into data.txt is
+// not pasting code, and counting it would manufacture a false positive. Mirrors
+// the client's lib/workspace.js and the server's lib/multiFile.ts.
+const CODE_EXTENSIONS = ['cpp', 'h']
+
+// A pre-v2 event has no fileName. Those sessions were single-file C++ by
+// construction, so treating an unnamed file as code preserves their behavior
+// exactly rather than silently dropping them from the numerator.
+export function isCodeFileName(name: string | null | undefined): boolean {
+  if (name === null || name === undefined) return true
+  const dot = name.lastIndexOf('.')
+  if (dot === -1) return false
+  return CODE_EXTENSIONS.includes(name.slice(dot + 1).toLowerCase())
 }
 
 interface BurstEntry {
@@ -165,7 +192,13 @@ export type AuthorshipResult = {
 
 export function computeAuthorship(playbackLog: unknown, finalCodeLength: number): AuthorshipResult {
   const entries = (playbackLog as PlaybackEntry[]) ?? []
-  const allEvents: PlaybackEvent[] = entries.flatMap((entry) => entry.events ?? [])
+  // Session 24 — CODE FILES ONLY. Keystrokes in a .txt/.csv/.dat are real work
+  // but they are not part of the submitted program, and the denominator
+  // (finalCodeLength) counts only code files, so counting their characters in
+  // the numerator would inflate typedRatio above 1.
+  const allEvents: PlaybackEvent[] = entries
+    .flatMap((entry) => entry.events ?? [])
+    .filter((e) => isCodeFileName(e.fileName))
 
   // Only positive deltas count as authored characters; deletions are handled
   // by the final length, not by subtracting from the typed budget.
@@ -198,10 +231,54 @@ export function computeAuthorship(playbackLog: unknown, finalCodeLength: number)
   }
 }
 
-// Length of the last flushed codeSnapshot — the submitted program. Scans
-// backwards so an empty trailing snapshot can't zero out the denominator.
+/**
+ * The workspace as last flushed: { fileName: fullText }.
+ *
+ * Pre-v2 sessions have no per-file snapshots, so their single `codeSnapshot` is
+ * presented as one `main.cpp` — the file it always actually was. That keeps
+ * every downstream consumer (submit-time AST audit, per-file replay) able to
+ * treat old and new sessions uniformly instead of branching everywhere.
+ */
+export function finalFileSnapshots(playbackLog: unknown): Record<string, string> {
+  const entries = (playbackLog as PlaybackEntry[]) ?? []
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const perFile = entries[i]?.fileSnapshots
+    if (perFile && typeof perFile === 'object' && Object.keys(perFile).length > 0) {
+      return perFile
+    }
+  }
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const snapshot = entries[i]?.codeSnapshot
+    if (typeof snapshot === 'string' && snapshot.length > 0) return { 'main.cpp': snapshot }
+  }
+  return {}
+}
+
+/**
+ * Length of the submitted PROGRAM — the authorship denominator.
+ *
+ * Session 24: this is now the summed length of every CODE file in the last
+ * flush that carried per-file snapshots. Before v2 it was the last
+ * `codeSnapshot`, i.e. whichever single file happened to be active at flush
+ * time — so on a multi-file submission the denominator could be a 40-character
+ * header while the student had written a 900-character program, and typedRatio
+ * was meaningless.
+ *
+ * Falls back to the old single-snapshot behavior for pre-v2 sessions, which is
+ * exactly right for them: they only ever had one file.
+ */
 export function finalCodeLengthOf(playbackLog: unknown): number {
   const entries = (playbackLog as PlaybackEntry[]) ?? []
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const perFile = entries[i]?.fileSnapshots
+    if (perFile && typeof perFile === 'object') {
+      const total = Object.entries(perFile)
+        .filter(([name]) => isCodeFileName(name))
+        .reduce((sum, [, text]) => sum + (typeof text === 'string' ? text.length : 0), 0)
+      if (total > 0) return total
+    }
+  }
+  // Pre-v2 session (or a v2 session whose code files are all empty).
   for (let i = entries.length - 1; i >= 0; i--) {
     const snapshot = entries[i]?.codeSnapshot
     if (typeof snapshot === 'string' && snapshot.length > 0) return snapshot.length

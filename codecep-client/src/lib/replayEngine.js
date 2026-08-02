@@ -1,22 +1,28 @@
-// Keystroke replay engine (Session 19). PURE module — no React, no DOM.
+// Keystroke replay engine (Session 19; rebuilt Session 24). PURE module — no
+// React, no DOM.
 //
-// Reconstruction strategy: SNAPSHOT-ANCHORED DIFF INTERPOLATION.
-// The stored keystroke events carry timing/kind/size ({ timestamp,
-// timeSinceLastKeystrokeMs, actionType, charDelta, textLength, provenance? })
-// but NOT the exact inserted characters or cursor position — so exact
-// per-keystroke text replay is not possible from the data. Instead:
+// TWO reconstruction strategies, chosen per session by what the data supports.
 //
-//   - Each 30s codeSnapshot is a KNOWN-CORRECT full-text checkpoint. The
-//     replay can never drift: text at every snapshot boundary is exact.
-//   - Between two snapshots we diff the texts (common prefix/suffix → one
-//     changed region) and distribute the insertion/removal across the real
-//     event timestamps, proportional to each event's real charDelta.
-//   - PASTE events apply their whole share in ONE step at their timestamp —
-//     the block visibly appears at once (the forensically important moment).
+// 1. EXACT (Telemetry Capture v2, Session 24 onward). Events carry the precise
+//    edit — `{ rangeOffset, rangeLength, insertedText }` (or a `changes` list)
+//    plus the `fileName` they happened in — so the replay applies the real
+//    edits in the real order and reproduces every intermediate buffer state
+//    character for character, per file. Nothing is interpolated.
 //
-// Fidelity, honestly stated: TIMING and PASTE MOMENTS are exact; the exact
-// character order WITHIN a typed burst is approximated (the diff region fills
-// front-to-back). Deletions shrink the old region as delete events occur.
+//    Correctness is not assumed, it is CHECKED: the reconstruction is compared
+//    against each flush's stored snapshot for that file. If a window ever fails
+//    to match, that window is healed from the snapshot and marked inexact, and
+//    the session reports `exact: false`. A replay is therefore never silently
+//    wrong — it either matches the recorded truth or says it didn't.
+//
+// 2. SNAPSHOT-ANCHORED DIFF INTERPOLATION (pre-v2 sessions). Older events carry
+//    only timing/kind/size, so exact text replay is impossible from the data.
+//    Each 30s codeSnapshot is a known-correct checkpoint; between two snapshots
+//    the diff is distributed across the real event timestamps in proportion to
+//    each event's charDelta, and paste events apply their whole share in ONE
+//    step. Timing and paste moments are exact; character order WITHIN a typed
+//    burst is approximated. This path is unchanged, so every session recorded
+//    before v2 replays exactly as it always did.
 
 export const DEFAULT_IDLE_GAP_MS = 5000;
 export const PASTE_MARK_MIN_CHARS = 20; // pastes at least this big get marks
@@ -55,6 +61,49 @@ export function diffTexts(from, to) {
   };
 }
 
+// The file a pre-v2 event (or a v2 event with no fileName) belongs to. Those
+// sessions were single-file C++ by construction.
+export const DEFAULT_FILE = "main.cpp";
+
+/**
+ * The stored edit list for an event, or null when this event predates exact
+ * capture. Single-change events store the edit flat; multi-cursor / replace-all
+ * events keep a `changes` array. Both read the same way through here.
+ */
+export function changesOf(ev) {
+  if (Array.isArray(ev?.changes) && ev.changes.length > 0) return ev.changes;
+  if (typeof ev?.insertedText === "string" && typeof ev?.rangeOffset === "number") {
+    return [{ o: ev.rangeOffset, d: ev.rangeLength ?? 0, t: ev.insertedText }];
+  }
+  return null;
+}
+
+/**
+ * Apply Monaco's edit list to a string. Monaco delivers changes sorted from the
+ * END of the document backwards precisely so they can be applied in sequence
+ * without re-basing offsets; that order is preserved in storage and relied on
+ * here.
+ */
+export function applyChanges(text, changes) {
+  let out = text;
+  for (const c of changes) {
+    const o = Math.max(0, Math.min(c.o, out.length));
+    out = out.slice(0, o) + (c.t ?? "") + out.slice(o + (c.d ?? 0));
+  }
+  return out;
+}
+
+const fileOf = (ev) => ev?.fileName ?? DEFAULT_FILE;
+
+// Per-flush workspace map, tolerating pre-v2 snapshots that only carry the
+// single active-buffer string.
+function snapshotFiles(snapshot) {
+  if (snapshot?.fileSnapshots && typeof snapshot.fileSnapshots === "object") {
+    return snapshot.fileSnapshots;
+  }
+  return { [DEFAULT_FILE]: snapshot?.codeSnapshot ?? "" };
+}
+
 export function buildReplay(data, opts = {}) {
   const snapshots = data?.snapshots ?? [];
   const events = data?.events ?? [];
@@ -62,11 +111,23 @@ export function buildReplay(data, opts = {}) {
   const idleGapMs = opts.idleGapMs ?? DEFAULT_IDLE_GAP_MS;
   const pasteMinChars = opts.pasteMinChars ?? PASTE_MARK_MIN_CHARS;
 
+  // Exact replay needs the edit list on EVERY event: a session with even one
+  // pre-v2 event cannot be reconstructed exactly, and guessing would be worse
+  // than the honest interpolation the legacy path already does well.
+  const exactCapable =
+    events.length > 0 && snapshots.length > 0 && events.every((e) => changesOf(e) !== null);
+  if (exactCapable) {
+    return buildExactReplay(data, { initialText, idleGapMs, pasteMinChars });
+  }
+
   const finalText = snapshots.length
     ? snapshots[snapshots.length - 1].codeSnapshot
     : initialText;
 
   if (!snapshots.length || !events.length) {
+    const names = snapshots.length
+      ? Object.keys(snapshotFiles(snapshots[snapshots.length - 1]))
+      : [DEFAULT_FILE];
     return {
       totalDurationMs: 0,
       startTime: data?.startedAt ?? 0,
@@ -74,8 +135,11 @@ export function buildReplay(data, opts = {}) {
       pasteMarks: [],
       gaps: [],
       eventCount: events.length,
+      files: names,
+      exact: false,
       finalText,
       textAt: () => finalText,
+      stateAt: () => ({ fileName: names[0] ?? DEFAULT_FILE, text: finalText }),
     };
   }
 
@@ -210,7 +274,190 @@ export function buildReplay(data, opts = {}) {
     pasteMarks,
     gaps,
     eventCount: events.length,
+    // A pre-v2 session had exactly one file, so the file-aware API still
+    // answers — it just always names the same file.
+    files: [DEFAULT_FILE],
+    exact: false,
     finalText,
     textAt,
+    stateAt: (relMs) => ({ fileName: DEFAULT_FILE, text: textAt(relMs) }),
+  };
+}
+
+// ── EXACT per-file reconstruction (Telemetry Capture v2) ────────────────────
+function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
+  const snapshots = data.snapshots;
+  const events = data.events;
+
+  // Partition the flattened events back into flush windows. `eventCount` per
+  // snapshot is what makes this exact rather than a clock comparison.
+  const windowOf = new Int32Array(events.length);
+  {
+    let cursor = 0;
+    for (let w = 0; w < snapshots.length; w++) {
+      const count = snapshots[w].eventCount ?? events.length - cursor;
+      for (let i = cursor; i < Math.min(cursor + count, events.length); i++) windowOf[i] = w;
+      cursor += count;
+    }
+    // Defensive: any trailing events belong to the last window.
+    for (let i = Math.max(0, cursor); i < events.length; i++) windowOf[i] = snapshots.length - 1;
+  }
+
+  // Every file that ever appears, in first-seen order.
+  const files = [];
+  const seeFile = (name) => {
+    if (!files.includes(name)) files.push(name);
+  };
+  events.forEach((e) => seeFile(fileOf(e)));
+  snapshots.forEach((s) => Object.keys(snapshotFiles(s)).forEach(seeFile));
+
+  // ── Checkpoint pass ───────────────────────────────────────────────────────
+  // Replay every edit forward per file, and at each flush boundary CHECK the
+  // reconstruction against the recorded snapshot. Matching proves the replay is
+  // faithful; a mismatch heals from the snapshot and is recorded, so the player
+  // can say the session is not exact instead of showing a plausible fiction.
+  // checkpoints[w][file] = that file's text at the END of window w.
+  const checkpoints = [];
+  const inexactWindows = new Set();
+  const current = new Map();
+  for (const f of files) {
+    // The entry file may have started non-empty (the /legacy template); every
+    // other file starts empty because it was created during the session.
+    current.set(f, f === (files[0] ?? DEFAULT_FILE) ? initialText : "");
+  }
+
+  let idx = 0;
+  for (let w = 0; w < snapshots.length; w++) {
+    while (idx < events.length && windowOf[idx] === w) {
+      const ev = events[idx];
+      const f = fileOf(ev);
+      current.set(f, applyChanges(current.get(f) ?? "", changesOf(ev)));
+      idx++;
+    }
+    const recorded = snapshotFiles(snapshots[w]);
+    for (const [name, text] of Object.entries(recorded)) {
+      if ((current.get(name) ?? "") !== text) {
+        inexactWindows.add(w);
+        current.set(name, text); // heal, so later windows stay anchored
+      }
+    }
+    checkpoints.push(new Map(current));
+  }
+
+  // ── Frames ────────────────────────────────────────────────────────────────
+  const firstEventTs = events[0].timestamp;
+  const openedAt = Number(data?.openedAt);
+  const t0 =
+    Number.isFinite(openedAt) && openedAt < firstEventTs
+      ? openedAt
+      : firstEventTs - FALLBACK_LEAD_IN_MS;
+
+  const frames = [];
+  const pasteMarks = [];
+  const gaps = [];
+  let prevT = 0;
+
+  events.forEach((ev, i) => {
+    const t = Math.max(prevT, ev.timestamp - t0); // keep monotonic
+    prevT = t;
+    const fileName = fileOf(ev);
+    frames.push({ t, i, w: windowOf[i], fileName, actionType: ev.actionType, charDelta: ev.charDelta });
+
+    // Paste marks now carry the REAL inserted range — no interpolation.
+    if (ev.actionType === "paste" && ev.charDelta >= pasteMinChars) {
+      const ch = changesOf(ev)[0];
+      pasteMarks.push({
+        t,
+        charCount: ev.charDelta,
+        fileName,
+        rangeStart: ch.o,
+        rangeEnd: ch.o + (ch.t?.length ?? 0),
+        provenance: ev.provenance ?? null,
+      });
+    }
+
+    if (i === 0) {
+      // Lead-in before the first keystroke: real dead time, skippable.
+      if (t > idleGapMs) gaps.push({ start: 0, end: t, durationMs: t });
+    } else if (ev.timeSinceLastKeystrokeMs > idleGapMs) {
+      gaps.push({
+        start: t - ev.timeSinceLastKeystrokeMs,
+        end: t,
+        durationMs: ev.timeSinceLastKeystrokeMs,
+      });
+    }
+  });
+
+  const totalDurationMs = frames.length ? frames[frames.length - 1].t : 0;
+
+  function frameIndexAt(relMs) {
+    let lo = 0;
+    let hi = frames.length - 1;
+    let ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (frames[mid].t <= relMs) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans;
+  }
+
+  // Text of one file at a frame: start from the previous window's checkpoint
+  // (or the session start) and replay only that window's edits for that file.
+  // Bounded work — at most one 30s flush window, however long the exam ran.
+  function textOfFileAt(fileName, frameIdx) {
+    if (frameIdx < 0) {
+      return fileName === (files[0] ?? DEFAULT_FILE) ? initialText : "";
+    }
+    const w = frames[frameIdx].w;
+    let text =
+      w === 0
+        ? fileName === (files[0] ?? DEFAULT_FILE)
+          ? initialText
+          : ""
+        : checkpoints[w - 1].get(fileName) ?? "";
+    const eventIdx = frames[frameIdx].i;
+    for (let i = 0; i < events.length; i++) {
+      if (windowOf[i] !== w) continue;
+      if (i > eventIdx) break;
+      if (fileOf(events[i]) !== fileName) continue;
+      text = applyChanges(text, changesOf(events[i]));
+    }
+    return text;
+  }
+
+  const lastFile = frames.length ? frames[frames.length - 1].fileName : files[0] ?? DEFAULT_FILE;
+  const finalFiles = checkpoints.length ? checkpoints[checkpoints.length - 1] : new Map();
+  const finalText = finalFiles.get(lastFile) ?? "";
+
+  function stateAt(relMs) {
+    if (relMs >= totalDurationMs) return { fileName: lastFile, text: finalText };
+    const idxAt = frameIndexAt(relMs);
+    if (idxAt < 0) {
+      const f = files[0] ?? DEFAULT_FILE;
+      return { fileName: f, text: initialText };
+    }
+    const fileName = frames[idxAt].fileName;
+    return { fileName, text: textOfFileAt(fileName, idxAt) };
+  }
+
+  return {
+    totalDurationMs,
+    startTime: t0,
+    frames,
+    pasteMarks,
+    gaps,
+    eventCount: events.length,
+    files,
+    exact: inexactWindows.size === 0,
+    inexactWindowCount: inexactWindows.size,
+    finalText,
+    finalFiles,
+    textAt: (relMs) => stateAt(relMs).text,
+    stateAt,
   };
 }
