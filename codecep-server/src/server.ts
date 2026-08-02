@@ -14,6 +14,16 @@ import multer from 'multer'
 import rateLimit from 'express-rate-limit'
 import { PDFParse } from 'pdf-parse'
 import { validateAST } from './ast/parser'
+import { buildZip } from './lib/zip'
+import {
+  validateWorkspace,
+  buildCompileScript,
+  buildRunScript,
+  splitCapturedFiles,
+  selectWrittenFiles,
+  type WorkspaceFile,
+  type CapturedFile,
+} from './lib/multiFile'
 import {
   computeMetricA,
   computeLinearInjection,
@@ -516,12 +526,30 @@ app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, 
 // (Session 21) — a reactive TTY would need a persistent sandboxed VM per
 // student, which is out of scope. Returns the Judge0 streams SEPARATELY so the
 // client console can style stdout / stderr / compile output distinctly.
+//
+// Session 23 — TWO shapes are accepted:
+//   • { files: [{name, content}], stdin?, sessionId? }  → MULTI-FILE. Packaged
+//     as a Judge0 "Multi-file program" (language 89): the workspace goes up as
+//     a zip in additional_files, `g++ -std=c++17 -o main *.cpp` links every
+//     source together, and data files are present in the working directory for
+//     fstream. Files the program WRITES come back in `outputFiles`.
+//   • { code, lang?, stdin?, sessionId? }               → LEGACY single source,
+//     language 54/50, byte-for-byte the pre-Session-23 behavior. Kept so the
+//     /legacy flow and any older caller keep working unchanged.
 const STDIN_MAX_CHARS = 100_000
 
 app.post('/api/execute', async (req: Request, res: Response) => {
-  const { code, lang, sessionId, stdin } = req.body
+  const { code, lang, sessionId, stdin, files } = req.body
 
-  if (typeof code !== 'string' || code.trim().length === 0) {
+  const isMultiFile = files !== undefined
+
+  if (isMultiFile) {
+    const problem = validateWorkspace(files)
+    if (problem) {
+      res.status(400).json({ error: problem })
+      return
+    }
+  } else if (typeof code !== 'string' || code.trim().length === 0) {
     res.status(400).json({ error: 'Request body must contain a non-empty "code" string.' })
     return
   }
@@ -534,7 +562,10 @@ app.post('/api/execute', async (req: Request, res: Response) => {
     return
   }
 
-  const languageId = lang === 'c' ? 50 : 54
+  const workspace: WorkspaceFile[] = isMultiFile ? files : []
+  // 89 = "Multi-file program": Judge0 ignores source_code and drives the
+  // archive's own compile/run scripts instead.
+  const languageId = isMultiFile ? 89 : lang === 'c' ? 50 : 54
 
   try {
     // base64_encoded=true is REQUIRED, not cosmetic: g++ diagnostics contain
@@ -546,8 +577,17 @@ app.post('/api/execute', async (req: Request, res: Response) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          source_code: Buffer.from(code, 'utf8').toString('base64'),
+          source_code: isMultiFile ? '' : Buffer.from(code, 'utf8').toString('base64'),
           language_id: languageId,
+          ...(isMultiFile
+            ? {
+                additional_files: buildZip([
+                  ...workspace,
+                  { name: 'compile', content: buildCompileScript() },
+                  { name: 'run', content: buildRunScript() },
+                ]).toString('base64'),
+              }
+            : {}),
           // Judge0 feeds these lines to the program's cin/scanf reads in order.
           ...(typeof stdin === 'string' && stdin.length > 0
             ? { stdin: Buffer.from(stdin, 'utf8').toString('base64') }
@@ -586,11 +626,23 @@ app.post('/api/execute', async (req: Request, res: Response) => {
       message: decode(raw.message),
     }
 
+    // Multi-file runs append the working directory's data files to stdout
+    // inside sentinels (that is how written files get out of Judge0 at all).
+    // Peel that block off BEFORE anything else looks at stdout, so the student
+    // sees only what their program actually printed.
+    let outputFiles: CapturedFile[] = []
+    if (isMultiFile) {
+      const { programStdout, captured } = splitCapturedFiles(data.stdout)
+      data.stdout = programStdout
+      outputFiles = selectWrittenFiles(workspace, captured)
+    }
+
     // Legacy single-string field kept for backward compatibility.
     const output = data.compile_output || data.stderr || data.stdout || '(no output)'
     debugLog(
-      `[EXECUTE] lang=${lang ?? 'cpp'} id=${languageId} stdin=${typeof stdin === 'string' ? stdin.length : 0}ch ` +
-      `→ status=${data.status?.description ?? 'unknown'}`
+      `[EXECUTE] ${isMultiFile ? `multi-file(${workspace.length})` : `lang=${lang ?? 'cpp'}`} id=${languageId} ` +
+      `stdin=${typeof stdin === 'string' ? stdin.length : 0}ch ` +
+      `→ status=${data.status?.description ?? 'unknown'} outputFiles=${outputFiles.length}`
     )
 
     // Increment runCount so Metric A has an accurate compile count
@@ -612,6 +664,9 @@ app.post('/api/execute', async (req: Request, res: Response) => {
       time: data.time ?? null,
       memory: data.memory ?? null,
       exitCode: data.exit_code ?? null,
+      // Files the program created or modified. Always present (empty for the
+      // legacy single-source path) so the client needs no shape check.
+      outputFiles,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'

@@ -57,6 +57,17 @@ body.is-splitting .main-content {
   overflow: hidden;
 }
 
+/* File rail + editor side by side, with the console spanning both beneath
+   them (Session 23). The console belongs to the whole workspace, not to one
+   file, so it is not nested inside this row. */
+.editor-row {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* Submission confirmation banner (Session 16) — unmistakable exam-over state.
    Tokenized (Session 18): green success / amber already-submitted. */
 .submit-banner {

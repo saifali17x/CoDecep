@@ -4,8 +4,18 @@ import EditorPane from "./components/EditorPane";
 import Terminal from "./components/Terminal";
 import StatusBar from "./components/StatusBar";
 import PdfPane from "./components/PdfPane";
+import FilePanel from "./components/FilePanel";
 import socket from "./socket";
 import { debugLog } from "./debug";
+import {
+  ENTRY_FILE,
+  createWorkspace,
+  kindOf,
+  languageOf,
+  outputKey,
+  outputNameOf,
+  sortFiles,
+} from "./lib/workspace";
 import "./App.css";
 
 // LIVE_LAB = tab-out alerts are active. ASSESSMENT = tab-outs are ignored.
@@ -39,6 +49,10 @@ const PDF_MAX_PCT = 60;
 // reliably supports self-contained C++ programs.
 const LANGUAGE = "cpp";
 
+// The build the student is shown in the console — it matches the compile step
+// the server writes into the Judge0 archive (see lib/multiFile.ts).
+const BUILD_COMMAND = "$ g++ -std=c++17 -o main *.cpp && ./main";
+
 function App({
   sessionId: sessionIdProp,
   userId,
@@ -64,7 +78,15 @@ function App({
   // the first frame; no session create, no telemetry, no fresh submission).
   const INITIAL_STATUS = initialStatusProp ?? "IN_PROGRESS";
 
-  const [code, setCode] = useState(initialCode);
+  // ── Multi-file workspace (Session 23) ──────────────────────────────────────
+  // The exam is a set of files, not one buffer: .cpp/.h are compiled together
+  // by `g++ *.cpp`, and .txt/.csv/.dat sit in the sandbox working directory for
+  // fstream. `outputFiles` holds what the LAST run wrote — read-only results,
+  // replaced on every run, never part of what gets compiled.
+  const [files, setFiles] = useState(() => createWorkspace(initialCode));
+  const [activeFile, setActiveFile] = useState(ENTRY_FILE);
+  const [outputFiles, setOutputFiles] = useState([]);
+
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [isRunning, setIsRunning] = useState(false);
   const [sessionStatus, setSessionStatus] = useState(INITIAL_STATUS);
@@ -84,6 +106,19 @@ function App({
   const [pdfPct, setPdfPct] = useState(PDF_DEFAULT_PCT);
   const workspaceRef = useRef(null);
   const draggingRef = useRef(false);
+
+  // ── Active buffer ─────────────────────────────────────────────────────────
+  // `activeFile` is either a workspace file name or an output key
+  // ("output:out.txt"). Everything the editor needs is derived from it, so
+  // there is exactly one source of truth for what is on screen.
+  const activeOutputName = outputNameOf(activeFile);
+  const activeOutput = activeOutputName
+    ? outputFiles.find((f) => f.name === activeOutputName) ?? null
+    : null;
+  const activeWorkspaceFile = files.find((f) => f.name === activeFile) ?? null;
+  const code = activeOutput ? activeOutput.content : activeWorkspaceFile?.content ?? "";
+  const activeLanguage = languageOf(activeOutputName ?? activeFile);
+  const isOutputBuffer = activeOutput !== null;
 
   // Refs mirror state so the stale closure inside EditorPane's setInterval
   // always reads the CURRENT value, not the value frozen at mount.
@@ -266,11 +301,60 @@ function App({
     setConsoleEvents((prev) => [...prev, ...entries]);
   }
 
+  // ── Workspace file management ─────────────────────────────────────────────
+  // Every mutation is a no-op once submitted: the Immune Phase means the
+  // submitted artifact cannot change, and that has to include the file set,
+  // not just the text inside main.cpp.
+  function handleEditorChange(next) {
+    if (isOutputBuffer) return; // captured results are read-only
+    setFiles((prev) =>
+      prev.map((f) => (f.name === activeFile ? { ...f, content: next } : f)),
+    );
+  }
+
+  function handleCreateFile(name) {
+    if (isSubmittedRefSafe()) return;
+    setFiles((prev) => [...prev, { name, content: "" }]);
+    setActiveFile(name);
+  }
+
+  function handleRenameFile(oldName, newName) {
+    if (isSubmittedRefSafe() || oldName === newName) return;
+    setFiles((prev) =>
+      prev.map((f) => (f.name === oldName ? { ...f, name: newName } : f)),
+    );
+    setActiveFile((current) => (current === oldName ? newName : current));
+  }
+
+  function handleDeleteFile(name) {
+    // main.cpp is the entry point for `g++ *.cpp -o main` — without it there is
+    // nothing to link. The panel disables its delete button; this is the guard
+    // behind it.
+    if (isSubmittedRefSafe() || name === ENTRY_FILE) return;
+    setFiles((prev) => prev.filter((f) => f.name !== name));
+    setActiveFile((current) => (current === name ? ENTRY_FILE : current));
+  }
+
+  function isSubmittedRefSafe() {
+    return sessionStatusRef.current === "SUBMITTED";
+  }
+
   async function handleRun() {
     setIsRunning(true);
+    // Results from the previous run are stale the moment a new one starts.
+    setOutputFiles([]);
+    if (outputNameOf(activeFile)) setActiveFile(ENTRY_FILE);
+    const sourceCount = files.filter((f) => kindOf(f.name) === "code").length;
+    const dataCount = files.length - sourceCount;
     // Clear-on-run so repeated runs stay readable.
     setConsoleEvents([
-      { kind: "cmd", text: "$ g++ main.cpp -o main && ./main" },
+      { kind: "cmd", text: BUILD_COMMAND },
+      {
+        kind: "meta",
+        text:
+          `[build] ${sourceCount} source file(s)` +
+          (dataCount > 0 ? `, ${dataCount} data file(s) in the working directory` : ""),
+      },
       ...(stdin.trim().length > 0
         ? [{ kind: "meta", text: `[stdin] ${stdin.split("\n").length} line(s) provided` }]
         : [{ kind: "meta", text: "[stdin] none provided" }]),
@@ -280,6 +364,10 @@ function App({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // The whole workspace goes up; the server packages it for Judge0's
+          // multi-file language. `code` is still sent so an older server (or
+          // the legacy path) keeps working.
+          files,
           code,
           lang: LANGUAGE,
           stdin,
@@ -289,6 +377,12 @@ function App({
       const data = await res.json();
 
       const entries = [];
+      // A rejected workspace (bad name, too many files) comes back as a plain
+      // error — surface it instead of falling through to "(no output)".
+      if (!res.ok && data.error) {
+        pushConsole([{ kind: "stderr", text: data.error }]);
+        return;
+      }
       if (data.compileOutput) {
         entries.push({ kind: "compile", text: data.compileOutput.trimEnd() });
       }
@@ -321,6 +415,26 @@ function App({
         kind: statusText === "Accepted" ? "ok" : "stderr",
         text: `— ${statusText}${meta ? ` (${meta})` : ""}`,
       });
+
+      // Files the program wrote. Their CONTENT goes to the file panel, not the
+      // console — dumping a data file into the terminal buries the program's
+      // own output. The console just says what was captured and where it went.
+      const written = Array.isArray(data.outputFiles) ? data.outputFiles : [];
+      setOutputFiles(written);
+      if (written.length > 0) {
+        entries.push({
+          kind: "meta",
+          text:
+            `[files] wrote ${written.map((f) => `${f.name} (${f.bytes}B)`).join(", ")}` +
+            ` — open under "Program output" in the file panel`,
+        });
+        for (const file of written.filter((f) => f.truncated)) {
+          entries.push({
+            kind: "meta",
+            text: `[files] ${file.name} is larger than the 64 KB preview limit — showing the first 64 KB`,
+          });
+        }
+      }
       pushConsole(entries);
     } catch (err) {
       pushConsole([{ kind: "stderr", text: `Network error — ${err.message}` }]);
@@ -332,6 +446,15 @@ function App({
   const isSubmitted = sessionStatus === "SUBMITTED";
   // The divider only exists when there IS a PDF — no empty pane otherwise.
   const showPdf = Boolean(hasPdf && assignmentId);
+
+  // Tabs mirror the workspace, plus the one output file being previewed (they
+  // are transient results, so they don't all earn a permanent tab).
+  const tabs = [
+    ...sortFiles(files).map((f) => ({ key: f.name, label: f.name, kind: kindOf(f.name) })),
+    ...(activeOutput
+      ? [{ key: outputKey(activeOutput.name), label: activeOutput.name, kind: "output" }]
+      : []),
+  ];
 
   return (
     <div className="app">
@@ -372,18 +495,34 @@ function App({
           </>
         )}
         <div className="main-content">
-          <EditorPane
-            code={code}
-            language={LANGUAGE}
-            onChange={setCode}
-            onCursorChange={(line, col) => setCursor({ line, col })}
-            onFlush={handleFlush}
-            isSubmitted={isSubmitted}
-            studentId={STUDENT_ID_EFFECTIVE}
-            sessionIdRef={sessionIdRef}
-            labMode={LAB_MODE_EFFECTIVE}
-            assignmentId={assignmentId}
-          />
+          <div className="editor-row">
+            <FilePanel
+              files={files}
+              activeFile={activeFile}
+              outputFiles={outputFiles}
+              onSelect={setActiveFile}
+              onCreate={handleCreateFile}
+              onRename={handleRenameFile}
+              onDelete={handleDeleteFile}
+              readOnly={isSubmitted}
+            />
+            <EditorPane
+              code={code}
+              language={activeLanguage}
+              onChange={handleEditorChange}
+              onCursorChange={(line, col) => setCursor({ line, col })}
+              onFlush={handleFlush}
+              isSubmitted={isSubmitted}
+              studentId={STUDENT_ID_EFFECTIVE}
+              sessionIdRef={sessionIdRef}
+              labMode={LAB_MODE_EFFECTIVE}
+              assignmentId={assignmentId}
+              tabs={tabs}
+              activeFile={activeFile}
+              onSelectFile={setActiveFile}
+              readOnly={isOutputBuffer}
+            />
+          </div>
           <Terminal
             events={consoleEvents}
             stdin={stdin}

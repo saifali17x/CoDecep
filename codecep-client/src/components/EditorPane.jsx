@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import socket from "../socket";
 import { debugLog } from "../debug";
+import { badgeOf, kindOf } from "../lib/workspace";
 import "./EditorPane.css";
 
 const PASTE_THRESHOLD = 50; // charDelta > 50 triggers ILLEGAL_PASTE (per CLAUDE.md)
@@ -30,10 +31,36 @@ export default function EditorPane({
   sessionIdRef,
   labMode,
   assignmentId,
+  // Multi-file workspace (Session 23). `tabs` are the switchable file names,
+  // `activeFile` is the buffer Monaco currently holds, and `readOnly` locks it
+  // for a captured program-output file. Telemetry is UNCHANGED by all of this:
+  // it still records the active editor as ONE stream (per-file attribution is
+  // the pending follow-up).
+  tabs = [],
+  activeFile,
+  onSelectFile,
+  readOnly = false,
 }) {
   const lastKeystrokeTime = useRef(Date.now());
   const prevCode = useRef(code);
   const telemetryBuffer = useRef([]);
+
+  // Switching files replaces the whole buffer. `prevCode` is the baseline every
+  // charDelta is measured against, so it MUST be re-anchored on the switch or
+  // the next real keystroke reports a delta the size of the difference between
+  // two files — which would classify as a huge paste or delete and could fire a
+  // false ILLEGAL_PASTE. No telemetry event is emitted for the switch itself.
+  //
+  // Safe because @monaco-editor/react suppresses onChange for programmatic
+  // `value` syncs (it sets an internal guard around its executeEdits call), so
+  // a file switch never reaches handleChange at all.
+  useEffect(() => {
+    prevCode.current = code;
+    lastKeystrokeTime.current = Date.now();
+    // Intentionally keyed on the FILE, not the code: re-anchoring on every
+    // keystroke would zero out every charDelta.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFile]);
 
   // Paste provenance (internal vs external) — session-local content history.
   // We compare pasted text against what THIS session has already contained;
@@ -83,6 +110,8 @@ export default function EditorPane({
     }, 30_000);
     return () => clearInterval(id);
   }, [isSubmitted]);
+
+  const isCodeBuffer = activeFile ? kindOf(activeFile) === "code" : true;
 
   function handleChange(val) {
     const next = val ?? "";
@@ -140,8 +169,15 @@ export default function EditorPane({
       }, 0);
     }
 
-    // Tier 1 alert — AST_VIOLATION (debounced 1.5s, de-duplicated, Immune Phase guarded)
+    // Tier 1 alert — AST_VIOLATION (debounced 1.5s, de-duplicated, Immune Phase guarded).
+    // Only C++ buffers are parsed: running the tree-sitter C++ grammar over a
+    // .txt/.csv/.dat data file would report the prose as illegal constructs and
+    // fire alerts for a student doing nothing wrong.
     clearTimeout(debounceTimer.current);
+    if (!isCodeBuffer) {
+      onChange(next);
+      return;
+    }
     const codeAtKeystroke = next;
     debounceTimer.current = setTimeout(async () => {
       if (isSubmittedRef.current) return;
@@ -193,15 +229,34 @@ export default function EditorPane({
   return (
     <div className="editor-pane">
       <div className="editor-tabs">
-        {/* One file, no close button — the exam has a single source file. */}
-        <div className="editor-tab active">
-          <span className="tab-badge cpp">C++</span>
-          main.cpp
-        </div>
+        {tabs.length === 0 ? (
+          <div className="editor-tab active">
+            <span className="tab-badge cpp">C++</span>
+            main.cpp
+          </div>
+        ) : (
+          tabs.map((tab) => (
+            <button
+              type="button"
+              key={tab.key}
+              className={`editor-tab ${tab.key === activeFile ? "active" : ""}`}
+              onClick={() => onSelectFile?.(tab.key)}
+              title={tab.kind === "output" ? `${tab.label} — written by your last run (read-only)` : tab.label}
+            >
+              <span className={`tab-badge ${tab.kind}`}>
+                {tab.kind === "output" ? "OUT" : badgeOf(tab.label)}
+              </span>
+              {tab.label}
+            </button>
+          ))
+        )}
       </div>
       <div className="editor-body">
         <Editor
           height="100%"
+          // `path` gives each file its own Monaco model, so undo history and
+          // scroll position survive switching between them.
+          path={activeFile}
           language={language}
           value={code}
           onChange={handleChange}
@@ -210,8 +265,9 @@ export default function EditorPane({
           options={{
             // Visually lock the editor once submitted (Session 16). The
             // Immune Phase already disarms telemetry; readOnly makes the
-            // exam-over state unmistakable.
-            readOnly: isSubmitted,
+            // exam-over state unmistakable. `readOnly` also covers a captured
+            // program-output file, which is a result, not a source buffer.
+            readOnly: isSubmitted || readOnly,
             fontSize: 14,
             fontFamily: '"Cascadia Code", ui-monospace, Consolas, monospace',
             minimap: { enabled: false },

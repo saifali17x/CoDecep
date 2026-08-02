@@ -21,30 +21,51 @@
   padding: 0 14px;
   height: 34px;
   font-size: 13px;
+  font-family: var(--font-mono, monospace);
   color: #969696;
   cursor: pointer;
+  background: none;
+  border: none;
   border-right: 1px solid #3c3c3c;
+  border-top: 2px solid transparent;
   white-space: nowrap;
   user-select: none;
+}
+
+.editor-tab:hover {
+  color: #d4d4d4;
 }
 
 .editor-tab.active {
   color: #d4d4d4;
   background: #1e1e1e;
-  border-top: 2px solid #c084fc;
+  border-top-color: #c084fc;
 }
 
 .tab-badge {
   font-size: 9px;
   font-weight: 700;
+  font-family: var(--font-ui, system-ui, sans-serif);
   padding: 1px 4px;
   border-radius: 3px;
   text-transform: uppercase;
 }
 
-.tab-badge.cpp {
+/* .cpp is the legacy single-file class; .code is the workspace equivalent. */
+.tab-badge.cpp,
+.tab-badge.code {
   background: #5c9fd6;
   color: #fff;
+}
+
+.tab-badge.data {
+  background: var(--surface-3, #30363d);
+  color: var(--text-2, #c9d1d9);
+}
+
+.tab-badge.output {
+  background: var(--warning, #d29922);
+  color: #1b1300;
 }
 
 .tab-close {

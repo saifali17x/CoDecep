@@ -1,0 +1,269 @@
+/* ── Exam file panel (Session 23) ───────────────────────────────────────────
+   Narrow left rail inside the editor column. Tokenized against theme.css so it
+   reads as part of the same app as the portal and the dashboard. */
+
+.file-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 190px;
+  min-width: 0;
+  background: var(--surface, #161b22);
+  border-right: 1px solid var(--border, #30363d);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  overflow: hidden;
+}
+
+.file-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2, 8px);
+  padding: 0 var(--sp-2, 8px) 0 var(--sp-3, 12px);
+  height: 34px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border, #30363d);
+  font-size: var(--fs-xs, 11px);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #8b949e);
+}
+
+.file-new {
+  background: transparent;
+  border: 1px solid var(--border, #30363d);
+  border-radius: var(--r-sm, 6px);
+  color: var(--text-2, #c9d1d9);
+  font-family: inherit;
+  font-size: var(--fs-xs, 11px);
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: all var(--transition, 0.15s ease);
+}
+.file-new:hover:not(:disabled) {
+  border-color: var(--accent, #388bfd);
+  color: var(--text, #e6edf3);
+}
+.file-new:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── New file / rename form ─────────────────────────────────────────────── */
+.file-form {
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  border-bottom: 1px solid var(--border-subtle, #21262d);
+  background: var(--surface-2, #21262d);
+  flex-shrink: 0;
+}
+
+.file-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg, #0d1117);
+  border: 1px solid var(--border, #30363d);
+  border-radius: var(--r-sm, 6px);
+  color: var(--text, #e6edf3);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-sm, 12px);
+  padding: 5px 8px;
+}
+.file-input:focus {
+  outline: none;
+  border-color: var(--accent, #388bfd);
+}
+
+.file-form-actions {
+  display: flex;
+  gap: var(--sp-1, 4px);
+  margin-top: var(--sp-2, 8px);
+}
+
+.file-form-btn {
+  flex: 1;
+  background: var(--surface-3, #30363d);
+  border: 1px solid var(--border, #30363d);
+  border-radius: var(--r-sm, 6px);
+  color: var(--text-2, #c9d1d9);
+  font-family: inherit;
+  font-size: var(--fs-xs, 11px);
+  padding: 4px 0;
+  cursor: pointer;
+  transition: all var(--transition, 0.15s ease);
+}
+.file-form-btn.primary {
+  background: var(--primary, #238636);
+  border-color: var(--primary, #238636);
+  color: #fff;
+}
+.file-form-btn.primary:hover {
+  background: var(--primary-hover, #2ea043);
+}
+.file-form-btn:not(.primary):hover {
+  border-color: var(--text-secondary, #8b949e);
+}
+
+.file-form-error {
+  margin: var(--sp-2, 8px) 0 0;
+  font-size: var(--fs-xs, 11px);
+  color: var(--danger, #f85149);
+  line-height: 1.4;
+}
+.file-form-hint {
+  margin: var(--sp-2, 8px) 0 0;
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-muted, #6e7681);
+  line-height: 1.4;
+}
+
+/* ── File groups ────────────────────────────────────────────────────────── */
+.file-groups {
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: var(--sp-3, 12px);
+}
+
+.file-group {
+  margin-top: var(--sp-3, 12px);
+}
+
+.file-group-title {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 var(--sp-1, 4px);
+  padding: 0 var(--sp-3, 12px);
+  font-size: var(--fs-xs, 11px);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted, #6e7681);
+}
+
+.file-group-note {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-muted, #6e7681);
+}
+
+.file-group-empty {
+  margin: 0;
+  padding: 0 var(--sp-3, 12px);
+  font-size: var(--fs-xs, 11px);
+  line-height: 1.45;
+  color: var(--text-muted, #6e7681);
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  border-left: 2px solid transparent;
+}
+.file-row:hover {
+  background: var(--surface-2, #21262d);
+}
+.file-row.active {
+  background: var(--surface-2, #21262d);
+  border-left-color: var(--accent, #388bfd);
+}
+
+.file-row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 5px var(--sp-2, 8px) 5px 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-secondary, #8b949e);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-sm, 12px);
+}
+.file-row.active .file-row-main {
+  color: var(--text, #e6edf3);
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  margin-left: auto;
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-muted, #6e7681);
+}
+
+.file-badge {
+  flex-shrink: 0;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+.file-badge.code {
+  background: #5c9fd6;
+  color: #fff;
+}
+.file-badge.data {
+  background: var(--surface-3, #30363d);
+  color: var(--text-2, #c9d1d9);
+}
+.file-badge.output {
+  background: var(--warning, #d29922);
+  color: #1b1300;
+}
+
+.file-actions {
+  display: none;
+  gap: 2px;
+  padding-right: var(--sp-1, 4px);
+}
+.file-row:hover .file-actions,
+.file-row.active .file-actions {
+  display: flex;
+}
+
+.file-action {
+  background: none;
+  border: none;
+  color: var(--text-muted, #6e7681);
+  cursor: pointer;
+  font-size: var(--fs-md, 13px);
+  line-height: 1;
+  padding: 3px 4px;
+  border-radius: var(--r-sm, 6px);
+  transition: all var(--transition, 0.15s ease);
+}
+.file-action:hover:not(:disabled) {
+  color: var(--text, #e6edf3);
+  background: var(--surface-3, #30363d);
+}
+.file-action.danger:hover:not(:disabled) {
+  color: var(--danger, #f85149);
+}
+.file-action:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+/* On a narrow screen the rail would eat the editor — shrink it. */
+@media (max-width: 900px) {
+  .file-panel {
+    flex-basis: 150px;
+  }
+}
