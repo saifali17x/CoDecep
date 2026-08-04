@@ -86,6 +86,14 @@ model Assignment {
   type    String // 'LIVE_LAB' | 'ASSESSMENT'
   week    Int    @default(1) // which week's class allowlist applies
 
+  // Multi-task exams (Prompt 1). How many questions this exam has: the student
+  // gets one file workspace per task and ONE submit covers all of them. Default
+  // 1 == the pre-multi-task behavior, so every existing assignment is unchanged.
+  // Tasks themselves are NOT a table — they are a dimension inside the session
+  // JSONB (taskId on events, taskSnapshots per flush). This column is the only
+  // structural fact that has to outlive a session.
+  taskCount Int @default(1)
+
   // The TASK/QUESTION document students read in the exam split-pane.
   // (Session 20: this was `pdfFilename`, which used to double as the syllabus.
   // The syllabus + allowlist now live on Class.)

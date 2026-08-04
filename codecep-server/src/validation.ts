@@ -52,6 +52,16 @@ export const createAssignmentSchema = z.looseObject({
   // Multipart text fields arrive as strings — coerce. Optional keeps the
   // pre-existing default-to-week-1 behavior when the field is absent.
   week: z.coerce.number().int('week must be an integer').min(1, 'week must be 1–20').max(20, 'week must be 1–20').optional(),
+  // Multi-task exams (Prompt 1). Capped at 6: a task is a whole file workspace
+  // with its own tab, and more than six stops being navigable in a timed exam.
+  // Optional so an older client (and every existing caller) still creates the
+  // single-task assignment it always did.
+  taskCount: z.coerce
+    .number()
+    .int('taskCount must be an integer')
+    .min(1, 'taskCount must be 1–6')
+    .max(6, 'taskCount must be 1–6')
+    .optional(),
 })
 
 export const astValidateSchema = z.looseObject({
@@ -77,6 +87,10 @@ export const telemetrySubmitSchema = z.looseObject({
   // Session 24 — per-file snapshots { fileName: fullText }. Optional so a
   // pre-v2 client (and /legacy) still validates.
   fileSnapshots: z.record(z.string(), z.string()).optional(),
+  // Multi-task exams (Prompt 1) — EVERY task's workspace, { taskId: { file:
+  // text } }. Optional so a single-task client, /legacy and any pre-multi-task
+  // client all still validate.
+  taskSnapshots: z.record(z.string(), z.record(z.string(), z.string())).optional(),
   engagedTimeMs: z.number().optional(),
 })
 

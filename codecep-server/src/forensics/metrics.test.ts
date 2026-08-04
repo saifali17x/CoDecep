@@ -14,6 +14,13 @@ import {
   ROBOTIC_INSUFFICIENT_REASON,
   MIN_CODE_LEN,
   TYPED_MIN,
+  DEFAULT_TASK,
+  taskIdsIn,
+  taskLabel,
+  finalTaskSnapshots,
+  codeLengthOfFiles,
+  playbackLogForTask,
+  burstHistoryForTask,
 } from './metrics'
 
 // ── Metric C: Robotic Variance ─────────────────────────────────────────────
@@ -374,5 +381,139 @@ describe('computeAuthorship — per-file (Session 24)', () => {
     const r = computeAuthorship(log, finalCodeLengthOf(log))
     expect(r.stats.typedRatio).toBe(1)
     expect(r.flag).toBe(false)
+  })
+})
+
+// ── Multi-task exams (Prompt 1) ────────────────────────────────────────────
+// Tasks are a dimension inside the same JSONB, so every selector below has to
+// hold two properties at once: it must slice a multi-task session correctly,
+// AND it must leave a pre-multi-task session reading exactly as it did before.
+describe('multi-task selectors', () => {
+  const ev = (
+    task: string | null,
+    file: string,
+    kind: 'type' | 'paste',
+    delta: number,
+  ) => ({
+    timestamp: 0,
+    timeSinceLastKeystrokeMs: 100,
+    actionType: kind,
+    charDelta: delta,
+    textLength: delta,
+    fileName: file,
+    ...(task === null ? {} : { taskId: task }),
+  })
+
+  const multiTaskLog = [
+    {
+      flushedAt: 1,
+      codeSnapshot: 'a'.repeat(100),
+      fileSnapshots: { 'main.cpp': 'a'.repeat(100) },
+      taskSnapshots: {
+        task1: { 'main.cpp': 'a'.repeat(100) },
+        task2: { 'main.cpp': '' },
+      },
+      events: [ev('task1', 'main.cpp', 'type', 100)],
+    },
+    {
+      flushedAt: 2,
+      codeSnapshot: 'b'.repeat(200),
+      fileSnapshots: { 'main.cpp': 'b'.repeat(200) },
+      taskSnapshots: {
+        task1: { 'main.cpp': 'a'.repeat(100) },
+        task2: { 'main.cpp': 'b'.repeat(200), 'data.txt': 'x'.repeat(500) },
+      },
+      events: [ev('task2', 'main.cpp', 'paste', 200)],
+    },
+  ]
+
+  it('lists every task that produced data, in exam order', () => {
+    expect(taskIdsIn(multiTaskLog)).toEqual(['task1', 'task2'])
+  })
+
+  it('presents a pre-multi-task session as the single default task', () => {
+    const legacy = [
+      {
+        flushedAt: 1,
+        codeSnapshot: 'int main(){}',
+        events: [ev(null, 'main.cpp', 'type', 12)],
+      },
+    ]
+    expect(taskIdsIn(legacy)).toEqual([DEFAULT_TASK])
+    expect(finalTaskSnapshots(legacy)).toEqual({
+      [DEFAULT_TASK]: { 'main.cpp': 'int main(){}' },
+    })
+  })
+
+  it('labels task ids for the report', () => {
+    expect(taskLabel('task3')).toBe('Task 3')
+  })
+
+  it('takes the LATEST snapshot of each task, including one left early', () => {
+    const snaps = finalTaskSnapshots(multiTaskLog)
+    // task1 was abandoned after the first window but its files are still known.
+    expect(snaps.task1).toEqual({ 'main.cpp': 'a'.repeat(100) })
+    expect(snaps.task2['main.cpp']).toBe('b'.repeat(200))
+  })
+
+  it('excludes data files from a task code length, as v2 does', () => {
+    expect(codeLengthOfFiles(finalTaskSnapshots(multiTaskLog).task2)).toBe(200)
+  })
+
+  it('sums every task for the SESSION-level denominator', () => {
+    // 100 (task1 main.cpp) + 200 (task2 main.cpp); data.txt excluded.
+    expect(finalCodeLengthOf(multiTaskLog)).toBe(300)
+  })
+
+  it('leaves finalCodeLengthOf untouched on a session with no task snapshots', () => {
+    const legacy = [{ flushedAt: 1, codeSnapshot: 'z'.repeat(42), events: [] }]
+    expect(finalCodeLengthOf(legacy)).toBe(42)
+  })
+
+  it('narrows the playback log to one task without changing its shape', () => {
+    const only2 = playbackLogForTask(multiTaskLog, 'task2')
+    expect(only2).toHaveLength(1)
+    expect(only2[0].events).toHaveLength(1)
+    expect(only2[0].events[0].charDelta).toBe(200)
+  })
+
+  it('scores a pasted task as pasted while a typed task stays clean', () => {
+    const snaps = finalTaskSnapshots(multiTaskLog)
+    const typed = computeAuthorship(
+      playbackLogForTask(multiTaskLog, 'task1'),
+      codeLengthOfFiles(snaps.task1),
+    )
+    const pasted = computeAuthorship(
+      playbackLogForTask(multiTaskLog, 'task2'),
+      codeLengthOfFiles(snaps.task2),
+    )
+    expect(typed.stats.typedRatio).toBe(1)
+    expect(typed.flag).toBe(false)
+    expect(pasted.stats.typedRatio).toBe(0)
+    expect(pasted.flag).toBe(true)
+  })
+
+  it('selects the burst entries of one task by window alignment', () => {
+    const bursts = [
+      { meanTimeBetweenKeystrokes: 111 },
+      { meanTimeBetweenKeystrokes: 222 },
+    ]
+    expect(burstHistoryForTask(multiTaskLog, bursts, 'task1')).toEqual([
+      bursts[0],
+    ])
+    expect(burstHistoryForTask(multiTaskLog, bursts, 'task2')).toEqual([
+      bursts[1],
+    ])
+  })
+
+  it('treats an untagged event as the default task, so legacy slices whole', () => {
+    const legacy = [
+      {
+        flushedAt: 1,
+        codeSnapshot: 'q'.repeat(90),
+        events: [ev(null, 'main.cpp', 'type', 90)],
+      },
+    ]
+    expect(playbackLogForTask(legacy, DEFAULT_TASK)[0].events).toHaveLength(1)
   })
 })

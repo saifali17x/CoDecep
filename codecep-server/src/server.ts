@@ -6,7 +6,7 @@ import path from 'path'
 import { createServer } from 'http'
 import { Server as SocketServer } from 'socket.io'
 import { Queue, Worker } from 'bullmq'
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient, Prisma } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
 import bcrypt from 'bcryptjs'
@@ -35,6 +35,15 @@ import {
   markInconclusiveIfSubstantial,
   LINEAR_INSUFFICIENT_REASON,
   ROBOTIC_INSUFFICIENT_REASON,
+  // Multi-task exams (Prompt 1) — tasks are a dimension inside the session
+  // JSONB, so these are all pure selectors over playback_log/burst_history.
+  taskIdsIn,
+  taskLabel,
+  finalTaskSnapshots,
+  codeLengthOfFiles,
+  playbackLogForTask,
+  burstHistoryForTask,
+  type AuthorshipResult,
 } from './forensics/metrics'
 import { signToken, requireAuth, requireRole } from './auth'
 import { parseSyllabusToAllowlist } from './gemini'
@@ -170,14 +179,81 @@ const forensicsWorker = new Worker(
       finalCodeLength,
     )
 
+    // ── Multi-task exams (Prompt 1) ─────────────────────────────────────────
+    // Tasks are separate programs, so the sharp reading is PER TASK: a student
+    // who hand-writes Task 1 and pastes Task 3 shows up as one flagged task,
+    // where a session-wide average would dilute it into nothing. Every metric
+    // below is the EXISTING function run over one task's slice — no metric math
+    // changed, only which events and which files it is handed.
+    const taskIds = taskIdsIn(session.playback_log)
+    const taskSnaps = finalTaskSnapshots(session.playback_log)
+    const isMultiTask = taskIds.length > 1
+
+    // Qualify file names by task ONLY when there is more than one, so a
+    // single-task session's audit reads exactly as it always did.
+    const sessionFiles: Record<string, string> = isMultiTask
+      ? Object.fromEntries(
+          taskIds.flatMap((taskId) =>
+            Object.entries(taskSnaps[taskId] ?? {}).map(([name, text]) => [`${taskId}/${name}`, text]),
+          ),
+        )
+      : taskSnaps[taskIds[0]] ?? finalFileSnapshots(session.playback_log)
+
     // Change B2 (Session 24): every code file in the final workspace is parsed
     // here, so a forbidden construct can no longer hide in a file that was
-    // never the active buffer.
-    const astAudit = await auditCodeFilesAtSubmit(session.playback_log, session.assignmentId)
+    // never the active buffer. Prompt 1 widens "workspace" to every task.
+    const astAudit = await auditCodeFiles(sessionFiles, session.assignmentId)
+
+    const tasks: Record<string, Prisma.InputJsonObject> = {}
+    for (const taskId of taskIds) {
+      const taskLog = playbackLogForTask(session.playback_log, taskId)
+      const taskBursts = burstHistoryForTask(session.playback_log, session.burst_history, taskId)
+      const taskFiles = taskSnaps[taskId] ?? {}
+      const taskCodeLength = codeLengthOfFiles(taskFiles)
+
+      tasks[taskId] = {
+        label: taskLabel(taskId),
+        // Metric A is a COMPILE count and runCount is a single session-level
+        // column, so it cannot yet be attributed to the task a Run belonged to.
+        // Reported at session scope and labelled as such rather than repeated
+        // per task as though it were measured there — per-task run attribution
+        // is a Prompt 2 concern.
+        metricA: { ...computeMetricA(runCount), scope: 'session' as const },
+        metricB: markInconclusiveIfSubstantial(
+          computeLinearInjection(taskLog),
+          LINEAR_INSUFFICIENT_REASON,
+          taskCodeLength,
+        ),
+        metricC: markInconclusiveIfSubstantial(
+          computeRoboticVariance(taskBursts),
+          ROBOTIC_INSUFFICIENT_REASON,
+          taskCodeLength,
+        ),
+        // Denominator is THIS task's whole program (its .cpp/.h files); data
+        // files are excluded exactly as in v2.
+        authorship: computeAuthorship(taskLog, taskCodeLength),
+        astAudit: await auditCodeFiles(taskFiles, session.assignmentId),
+      }
+    }
 
     await prisma.session.update({
       where: { id: sessionId },
-      data: { forensicsResults: { metricA, metricB, metricC, authorship, astAudit } },
+      data: {
+        forensicsResults: {
+          // The session-level result is the UNCHANGED computation over ALL
+          // events — not a roll-up of the per-task numbers — so every existing
+          // reader (ClassPage's Auth column, the DVR pills, the three
+          // flags-only routes) keeps working with no shape change at all.
+          metricA,
+          metricB,
+          metricC,
+          authorship,
+          astAudit,
+          // Additive. The merged cross-task report is Prompt 2.
+          taskCount: taskIds.length,
+          tasks,
+        },
+      },
     })
 
     console.log(`[FORENSICS] Session ${sessionId} processed — metricA runCount=${runCount} flag=${metricA.flag}`)
@@ -185,6 +261,12 @@ const forensicsWorker = new Worker(
     console.log(`[FORENSICS] session ${sessionId} metricC flag=${metricC.flag} cv=${metricC.stats.cv} sampleCount=${metricC.stats.sampleCount}${metricC.inconclusive ? ' inconclusive=true' : ''}`)
     console.log(`[FORENSICS] session ${sessionId} authorship flag=${authorship.flag} finalCodeLength=${finalCodeLength} typedRatio=${authorship.stats.typedRatio} pastedRatio=${authorship.stats.pastedRatio}`)
     console.log(`[FORENSICS] session ${sessionId} astAudit flag=${astAudit.flag} files=[${astAudit.checkedFiles.join(', ')}] violations=${astAudit.violations.length} (allowlist: ${astAudit.allowlistSource})`)
+    if (isMultiTask) {
+      for (const taskId of taskIds) {
+        const t = tasks[taskId] as { authorship: AuthorshipResult; astAudit: { flag: boolean } }
+        console.log(`[FORENSICS] session ${sessionId} ${taskId} authorship flag=${t.authorship.flag} typedRatio=${t.authorship.stats.typedRatio} finalCodeLength=${t.authorship.stats.finalCodeLength} astFlag=${t.astAudit.flag}`)
+      }
+    }
   },
   { connection: redisConnection },
 )
@@ -271,10 +353,12 @@ interface KeystrokeEvent {
   rangeLength?: number
   insertedText?: string
   changes?: { o: number; d: number; t: string }[]
+  /** Multi-task exams (Prompt 1) — absent means the single default task. */
+  taskId?: string | null
 }
 
 app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: Request, res: Response) => {
-  const { sessionId, chunk, codeSnapshot, fileSnapshots, engagedTimeMs } = req.body
+  const { sessionId, chunk, codeSnapshot, fileSnapshots, taskSnapshots, engagedTimeMs } = req.body
 
   if (!Array.isArray(chunk) || chunk.length === 0) {
     res.status(400).json({ error: 'Invalid payload: sessionId and non-empty chunk are required.' })
@@ -290,6 +374,13 @@ app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: R
     // The WHOLE workspace — the source of truth from v2 onward. Absent on a
     // pre-v2 payload, which readers treat as a single default file.
     ...(fileSnapshots && typeof fileSnapshots === 'object' ? { fileSnapshots } : {}),
+    // Multi-task (Prompt 1): EVERY task's workspace, not just the active one.
+    // Without this a task the student left early would only ever be visible
+    // through the snapshot of whichever window happened to be active, so its
+    // final files — the authorship denominator — could not be recovered.
+    // Absent on a single-task/pre-multi-task payload, which readers present as
+    // one default task.
+    ...(taskSnapshots && typeof taskSnapshots === 'object' ? { taskSnapshots } : {}),
     events,
   }
 
@@ -416,6 +507,10 @@ app.get(
       // Session 24: the whole workspace at this flush. Undefined on pre-v2
       // sessions — the replay engine falls back to the single codeSnapshot.
       fileSnapshots: entry.fileSnapshots ?? null,
+      // Multi-task (Prompt 1): every task's workspace at this flush. Null on
+      // single-task and pre-multi-task sessions, which the replay engine reads
+      // exactly as it did before.
+      taskSnapshots: entry.taskSnapshots ?? null,
       eventCount: Array.isArray(entry.events) ? entry.events.length : 0,
     }))
     const events = log.flatMap((entry) => (Array.isArray(entry.events) ? entry.events : []))
@@ -548,8 +643,12 @@ async function resolveAllowlistFor(
 // files are never parsed — the C++ grammar would report prose as violations.
 // Result is stored on forensicsResults for instructor review; like every other
 // metric it is a signal, not a verdict.
-async function auditCodeFilesAtSubmit(playbackLog: unknown, assignmentId: string | null) {
-  const snapshots = finalFileSnapshots(playbackLog)
+//
+// Multi-task (Prompt 1): takes a workspace map rather than the raw playback log,
+// so the SAME function audits one task's files and the whole session's. All
+// tasks share one allowlist (the assignment's week), so nothing about the
+// judgement changes — only which files are handed in.
+async function auditCodeFiles(snapshots: Record<string, string>, assignmentId: string | null) {
   const codeFiles = Object.entries(snapshots).filter(
     ([name, text]) => isCodeFileName(name) && typeof text === 'string' && text.trim().length > 0,
   )
@@ -621,7 +720,12 @@ app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, 
 const STDIN_MAX_CHARS = 100_000
 
 app.post('/api/execute', async (req: Request, res: Response) => {
-  const { code, lang, sessionId, stdin, files } = req.body
+  // Multi-task (Prompt 1): `taskId` names which task's workspace this is — the
+  // client only ever sends the ACTIVE task's files, so each task compiles and
+  // runs as the separate program it is. It is carried for the run log only:
+  // runCount is a single session-level column, so a Run cannot yet be
+  // attributed to a task (per-task Metric A is a Prompt 2 concern).
+  const { code, lang, sessionId, stdin, files, taskId } = req.body
 
   const isMultiFile = files !== undefined
 
@@ -722,7 +826,8 @@ app.post('/api/execute', async (req: Request, res: Response) => {
     // Legacy single-string field kept for backward compatibility.
     const output = data.compile_output || data.stderr || data.stdout || '(no output)'
     debugLog(
-      `[EXECUTE] ${isMultiFile ? `multi-file(${workspace.length})` : `lang=${lang ?? 'cpp'}`} id=${languageId} ` +
+      `[EXECUTE] ${typeof taskId === 'string' && taskId.length > 0 ? `${taskId} ` : ''}` +
+      `${isMultiFile ? `multi-file(${workspace.length})` : `lang=${lang ?? 'cpp'}`} id=${languageId} ` +
       `stdin=${typeof stdin === 'string' ? stdin.length : 0}ch ` +
       `→ status=${data.status?.description ?? 'unknown'} outputFiles=${outputFiles.length}`
     )
@@ -1084,6 +1189,9 @@ app.post(
     const classId = String(req.params.classId)
     const { title, type } = req.body
     const week = Number.parseInt(req.body.week, 10)
+    // Multi-task exams (Prompt 1). Absent / unparseable → 1, i.e. exactly the
+    // single-task exam this route has always created.
+    const taskCount = Number.parseInt(req.body.taskCount, 10)
 
     const klass = await prisma.class.findUnique({ where: { id: classId } })
     if (!klass) {
@@ -1101,10 +1209,11 @@ app.post(
         title: title.trim(),
         type,
         week: Number.isFinite(week) && week > 0 ? week : 1,
+        taskCount: Number.isFinite(taskCount) && taskCount >= 1 && taskCount <= 6 ? taskCount : 1,
         assignmentPdfFilename: req.file?.filename ?? null,
       },
     })
-    console.log(`[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week}) in class ${classId}`)
+    console.log(`[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week}, ${assignment.taskCount} task(s)) in class ${classId}`)
     res.status(201).json(assignment)
   }
 )

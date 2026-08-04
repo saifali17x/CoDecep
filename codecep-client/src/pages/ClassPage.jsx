@@ -60,6 +60,9 @@ export default function ClassPage() {
   const [title, setTitle] = useState("");
   const [type, setType] = useState("LIVE_LAB");
   const [week, setWeek] = useState(1);
+  // Multi-task exams (Prompt 1): how many questions this exam has. 1 is the
+  // single-task exam this form has always created.
+  const [taskCount, setTaskCount] = useState(1);
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -101,6 +104,7 @@ export default function ClassPage() {
       fd.append("title", title);
       fd.append("type", type);
       fd.append("week", String(week));
+      fd.append("taskCount", String(taskCount));
       // The TASK/QUESTION document for the exam split-pane.
       if (file) fd.append("assignmentPdf", file);
 
@@ -111,6 +115,7 @@ export default function ClassPage() {
       });
       setTitle("");
       setWeek(1);
+      setTaskCount(1);
       setFile(null);
       await load();
     } catch (err) {
@@ -215,6 +220,18 @@ export default function ClassPage() {
                 />
               </div>
               <div className="field">
+                <label htmlFor="a-tasks">Tasks</label>
+                <input
+                  id="a-tasks"
+                  type="number"
+                  min="1"
+                  max="6"
+                  value={taskCount}
+                  onChange={(e) => setTaskCount(e.target.value)}
+                  style={{ width: 70 }}
+                />
+              </div>
+              <div className="field">
                 <label htmlFor="a-pdf">Assignment PDF (optional)</label>
                 <input
                   id="a-pdf"
@@ -227,7 +244,9 @@ export default function ClassPage() {
             </form>
             <p className="field-hint">
               The assignment PDF is the task shown to students in the exam. Allowed constructs
-              come from this class's syllabus (Week N).
+              come from this class's syllabus (Week N). <strong>Tasks</strong> (1–6) is how many
+              questions the exam has — each gets its own file workspace and is compiled and run
+              separately, but one PDF covers them all and the student submits once.
             </p>
           </div>
         )}

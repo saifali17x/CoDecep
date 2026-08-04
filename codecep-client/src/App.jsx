@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import TopBar from "./components/TopBar";
 import EditorPane from "./components/EditorPane";
 import Terminal from "./components/Terminal";
@@ -12,9 +12,11 @@ import {
   createWorkspace,
   kindOf,
   languageOf,
+  makeTaskIds,
   outputKey,
   outputNameOf,
   sortFiles,
+  taskLabel,
 } from "./lib/workspace";
 import "./App.css";
 
@@ -61,6 +63,10 @@ function App({
   // Starting editor contents. Blank in every flow (see above); the prop is
   // kept so a caller could seed a buffer deliberately, but nothing does.
   initialCode = "",
+  // Multi-task exams (Prompt 1). How many questions this exam has; each gets
+  // its own file workspace behind its own tab. 1 (the default, and every
+  // pre-multi-task assignment) is the single-workspace exam as it was.
+  taskCount = 1,
 } = {}) {
   // Effective values: props (real identity from ExamPage) fall back to the
   // hardcoded module consts so the propless /legacy dev flow is unchanged.
@@ -71,14 +77,55 @@ function App({
   // the first frame; no session create, no telemetry, no fresh submission).
   const INITIAL_STATUS = initialStatusProp ?? "IN_PROGRESS";
 
-  // ── Multi-file workspace (Session 23) ──────────────────────────────────────
+  // ── Multi-file workspace (Session 23), per TASK (Prompt 1) ─────────────────
   // The exam is a set of files, not one buffer: .cpp/.h are compiled together
   // by `g++ *.cpp`, and .txt/.csv/.dat sit in the sandbox working directory for
   // fstream. `outputFiles` holds what the LAST run wrote — read-only results,
   // replaced on every run, never part of what gets compiled.
-  const [files, setFiles] = useState(() => createWorkspace(initialCode));
-  const [activeFile, setActiveFile] = useState(ENTRY_FILE);
-  const [outputFiles, setOutputFiles] = useState([]);
+  //
+  // Multi-task exams multiply that whole picture: each task is a SEPARATE
+  // program with its own files, its own run and its own console. Holding one
+  // state object per task (rather than five parallel maps) keeps "everything
+  // that belongs to Task 2" in one place, so switching tasks is a single
+  // lookup and nothing can drift out of step.
+  const taskIds = useMemo(() => makeTaskIds(taskCount), [taskCount]);
+  const isMultiTask = taskIds.length > 1;
+  const [tasks, setTasks] = useState(() =>
+    Object.fromEntries(
+      makeTaskIds(taskCount).map((id) => [
+        id,
+        {
+          files: createWorkspace(initialCode),
+          activeFile: ENTRY_FILE,
+          outputFiles: [],
+          consoleEvents: [],
+          stdin: "",
+        },
+      ]),
+    ),
+  );
+  const [activeTask, setActiveTask] = useState(taskIds[0]);
+
+  // Everything on screen belongs to the ACTIVE task. Derived, never duplicated,
+  // for the same reason the active buffer is derived from `files`: one source
+  // of truth for what the student is looking at.
+  const current = tasks[activeTask] ?? tasks[taskIds[0]];
+  const files = current.files;
+  const activeFile = current.activeFile;
+  const outputFiles = current.outputFiles;
+  const consoleEvents = current.consoleEvents;
+  const stdin = current.stdin;
+
+  // Patch one task's slice. `patch` may be an object or a function of the
+  // task's current state.
+  const patchTask = useCallback((taskId, patch) => {
+    setTasks((prev) => {
+      const before = prev[taskId];
+      if (!before) return prev;
+      const next = typeof patch === "function" ? patch(before) : patch;
+      return { ...prev, [taskId]: { ...before, ...next } };
+    });
+  }, []);
 
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
   const [isRunning, setIsRunning] = useState(false);
@@ -92,11 +139,10 @@ function App({
     INITIAL_STATUS === "SUBMITTED" ? "ALREADY_SUBMITTED" : null,
   );
 
-  // Execution console state (Session 21). `consoleEvents` holds ONLY
-  // execution output — program stdout/stderr, compiler messages, run status.
-  // Telemetry flush traces are deliberately NOT piped here any more.
-  const [consoleEvents, setConsoleEvents] = useState([]);
-  const [stdin, setStdin] = useState("");
+  // Execution console state (Session 21) now lives per task (see `tasks`
+  // above): it holds ONLY execution output — program stdout/stderr, compiler
+  // messages, run status — and Task 1's output must never appear under Task 2.
+  // Telemetry flush traces are deliberately NOT piped here at all.
 
   // Split width (session-local; no need to persist across reloads).
   const [pdfPct, setPdfPct] = useState(PDF_DEFAULT_PCT);
@@ -121,7 +167,10 @@ function App({
   const sessionIdRef = useRef(null);
   const sessionStatusRef = useRef(INITIAL_STATUS);
   const codeRef = useRef(initialCode);
-  const filesRef = useRef(files);
+  // Prompt 1: the flush needs EVERY task's workspace (not just the active
+  // one), and the active task id to label the snapshot it is anchored on.
+  const tasksRef = useRef(tasks);
+  const activeTaskRef = useRef(activeTask);
 
   // Session 25 — final pre-disarm flush. The telemetry buffer lives inside
   // EditorPane (only it sees keystrokes), so it hands back a drain-and-send
@@ -143,10 +192,14 @@ function App({
 
   // Session 24 — the flush needs EVERY file, not just the active buffer, and
   // it runs from a stale-closure interval, so the workspace is mirrored into a
-  // ref exactly as `code` is.
+  // ref exactly as `code` is. Prompt 1 widens that to every task.
   useEffect(() => {
-    filesRef.current = files;
-  }, [files]);
+    tasksRef.current = tasks;
+  }, [tasks]);
+
+  useEffect(() => {
+    activeTaskRef.current = activeTask;
+  }, [activeTask]);
 
   // Keep sessionStatusRef in sync
   useEffect(() => {
@@ -316,7 +369,9 @@ function App({
     const currentStatus = sessionStatusRef.current;
     const currentSessionId = sessionIdRef.current;
     const currentCode = codeRef.current;
-    const currentFiles = filesRef.current ?? [];
+    const currentTasks = tasksRef.current ?? {};
+    const currentTaskId = activeTaskRef.current;
+    const currentFiles = currentTasks[currentTaskId]?.files ?? [];
 
     // Returns true only when the server actually accepted the chunk, so the
     // submit path can tell "persisted" from "lost to a network blip".
@@ -330,6 +385,18 @@ function App({
     // kept so pre-v2 readers (and the legacy /playback route) still work.
     const fileSnapshots = Object.fromEntries(
       currentFiles.map((f) => [f.name, f.content]),
+    );
+
+    // Per-TASK snapshots (Prompt 1) — every task's workspace, not just the
+    // active one. `fileSnapshots` above keeps its existing meaning (the active
+    // task's files) so no existing reader changes; this is what lets forensics
+    // recover the final program of a task the student left an hour ago and
+    // never came back to.
+    const taskSnapshots = Object.fromEntries(
+      Object.entries(currentTasks).map(([taskId, task]) => [
+        taskId,
+        Object.fromEntries((task.files ?? []).map((f) => [f.name, f.content])),
+      ]),
     );
 
     // Banked time + time accrued in the current (still-open) focus window
@@ -347,6 +414,7 @@ function App({
           chunk,
           codeSnapshot: currentCode,
           fileSnapshots,
+          taskSnapshots,
           engagedTimeMs,
         }),
       });
@@ -365,33 +433,69 @@ function App({
     }
   }
 
-  function pushConsole(entries) {
-    setConsoleEvents((prev) => [...prev, ...entries]);
+  function pushConsole(taskId, entries) {
+    patchTask(taskId, (t) => ({ consoleEvents: [...t.consoleEvents, ...entries] }));
+  }
+
+  // ── Task switch: FLUSH FIRST (Prompt 1) ────────────────────────────────────
+  // Telemetry buffers in EditorPane and only drains every 30s (or on submit).
+  // Without this, a student who types in Task 1, switches to Task 2 and never
+  // returns would have their Task 1 buffer still sitting unsent when Submit
+  // drained only the ACTIVE task — those keystrokes would be stranded and the
+  // forensics worker would judge Task 1 on data it never received.
+  //
+  // The drain happens while the outgoing task is still active, so the events
+  // (already tagged with their own taskId at capture time) and the snapshot the
+  // flush is anchored on both describe the task being left. Best-effort, for
+  // the same reason the submit flush is: a flaky network must never block a
+  // student from moving between questions mid-exam.
+  async function handleSelectTask(taskId) {
+    if (taskId === activeTask || !tasks[taskId]) return;
+    if (!isSubmittedRefSafe()) {
+      try {
+        await flushNowRef.current?.();
+      } catch (err) {
+        console.warn("[TASK] flush on switch failed — switching anyway:", err?.message ?? err);
+      }
+    }
+    setActiveTask(taskId);
+    activeTaskRef.current = taskId;
   }
 
   // ── Workspace file management ─────────────────────────────────────────────
   // Every mutation is a no-op once submitted: the Immune Phase means the
   // submitted artifact cannot change, and that has to include the file set,
   // not just the text inside main.cpp.
+  // Every one of these acts on the ACTIVE task's workspace: the file rules
+  // (main.cpp always present and undeletable, allowed extensions, guarded
+  // names) hold per task, not once per exam.
+  function setActiveFile(next) {
+    patchTask(activeTask, (t) => ({
+      activeFile: typeof next === "function" ? next(t.activeFile) : next,
+    }));
+  }
+
   function handleEditorChange(next) {
     if (isOutputBuffer) return; // captured results are read-only
-    setFiles((prev) =>
-      prev.map((f) => (f.name === activeFile ? { ...f, content: next } : f)),
-    );
+    patchTask(activeTask, (t) => ({
+      files: t.files.map((f) => (f.name === t.activeFile ? { ...f, content: next } : f)),
+    }));
   }
 
   function handleCreateFile(name) {
     if (isSubmittedRefSafe()) return;
-    setFiles((prev) => [...prev, { name, content: "" }]);
-    setActiveFile(name);
+    patchTask(activeTask, (t) => ({
+      files: [...t.files, { name, content: "" }],
+      activeFile: name,
+    }));
   }
 
   function handleRenameFile(oldName, newName) {
     if (isSubmittedRefSafe() || oldName === newName) return;
-    setFiles((prev) =>
-      prev.map((f) => (f.name === oldName ? { ...f, name: newName } : f)),
-    );
-    setActiveFile((current) => (current === oldName ? newName : current));
+    patchTask(activeTask, (t) => ({
+      files: t.files.map((f) => (f.name === oldName ? { ...f, name: newName } : f)),
+      activeFile: t.activeFile === oldName ? newName : t.activeFile,
+    }));
   }
 
   function handleDeleteFile(name) {
@@ -399,8 +503,10 @@ function App({
     // nothing to link. The panel disables its delete button; this is the guard
     // behind it.
     if (isSubmittedRefSafe() || name === ENTRY_FILE) return;
-    setFiles((prev) => prev.filter((f) => f.name !== name));
-    setActiveFile((current) => (current === name ? ENTRY_FILE : current));
+    patchTask(activeTask, (t) => ({
+      files: t.files.filter((f) => f.name !== name),
+      activeFile: t.activeFile === name ? ENTRY_FILE : t.activeFile,
+    }));
   }
 
   function isSubmittedRefSafe() {
@@ -408,38 +514,49 @@ function App({
   }
 
   async function handleRun() {
+    // Pin the task this run belongs to: the student can switch tabs while
+    // Judge0 is still working, and Task 2's output must not land in Task 3's
+    // console. Tasks are separate programs, so only THIS task's files are
+    // compiled — `g++ *.cpp` globs one task's workspace, never the exam's.
+    const runTaskId = activeTask;
+    const runFiles = files;
+    const runStdin = stdin;
     setIsRunning(true);
     // Results from the previous run are stale the moment a new one starts.
-    setOutputFiles([]);
-    if (outputNameOf(activeFile)) setActiveFile(ENTRY_FILE);
-    const sourceCount = files.filter((f) => kindOf(f.name) === "code").length;
-    const dataCount = files.length - sourceCount;
+    const sourceCount = runFiles.filter((f) => kindOf(f.name) === "code").length;
+    const dataCount = runFiles.length - sourceCount;
     // Clear-on-run so repeated runs stay readable.
-    setConsoleEvents([
-      { kind: "cmd", text: BUILD_COMMAND },
-      {
-        kind: "meta",
-        text:
-          `[build] ${sourceCount} source file(s)` +
-          (dataCount > 0 ? `, ${dataCount} data file(s) in the working directory` : ""),
-      },
-      ...(stdin.trim().length > 0
-        ? [{ kind: "meta", text: `[stdin] ${stdin.split("\n").length} line(s) provided` }]
-        : [{ kind: "meta", text: "[stdin] none provided" }]),
-    ]);
+    patchTask(runTaskId, (t) => ({
+      outputFiles: [],
+      activeFile: outputNameOf(t.activeFile) ? ENTRY_FILE : t.activeFile,
+      consoleEvents: [
+        { kind: "cmd", text: BUILD_COMMAND },
+        {
+          kind: "meta",
+          text:
+            `[build] ${sourceCount} source file(s)` +
+            (dataCount > 0 ? `, ${dataCount} data file(s) in the working directory` : ""),
+        },
+        ...(runStdin.trim().length > 0
+          ? [{ kind: "meta", text: `[stdin] ${runStdin.split("\n").length} line(s) provided` }]
+          : [{ kind: "meta", text: "[stdin] none provided" }]),
+      ],
+    }));
     try {
       const res = await fetch("http://localhost:3001/api/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          // The whole workspace goes up; the server packages it for Judge0's
+          // This TASK's workspace goes up; the server packages it for Judge0's
           // multi-file language. `code` is still sent so an older server (or
           // the legacy path) keeps working.
-          files,
+          files: runFiles,
           code,
           lang: LANGUAGE,
-          stdin,
+          stdin: runStdin,
           sessionId: sessionIdRef.current,
+          // Which task this run belongs to — carried for the server's run log.
+          taskId: runTaskId,
         }),
       });
       const data = await res.json();
@@ -448,7 +565,7 @@ function App({
       // A rejected workspace (bad name, too many files) comes back as a plain
       // error — surface it instead of falling through to "(no output)".
       if (!res.ok && data.error) {
-        pushConsole([{ kind: "stderr", text: data.error }]);
+        pushConsole(runTaskId, [{ kind: "stderr", text: data.error }]);
         return;
       }
       if (data.compileOutput) {
@@ -488,7 +605,7 @@ function App({
       // console — dumping a data file into the terminal buries the program's
       // own output. The console just says what was captured and where it went.
       const written = Array.isArray(data.outputFiles) ? data.outputFiles : [];
-      setOutputFiles(written);
+      patchTask(runTaskId, { outputFiles: written });
       if (written.length > 0) {
         entries.push({
           kind: "meta",
@@ -503,9 +620,9 @@ function App({
           });
         }
       }
-      pushConsole(entries);
+      pushConsole(runTaskId, entries);
     } catch (err) {
-      pushConsole([{ kind: "stderr", text: `Network error — ${err.message}` }]);
+      pushConsole(runTaskId, [{ kind: "stderr", text: `Network error — ${err.message}` }]);
     } finally {
       setIsRunning(false);
     }
@@ -564,6 +681,31 @@ function App({
           </>
         )}
         <div className="main-content">
+          {/* Task tabs (Prompt 1). Rendered only for a genuinely multi-task
+              exam: a single-task assignment must look exactly as it did
+              before, with no extra chrome to explain. The PDF pane sits
+              OUTSIDE this column because one question sheet covers every
+              task — it stays put while the workspace beneath it swaps. */}
+          {isMultiTask && (
+            <div className="task-tabs" role="tablist" aria-label="Exam tasks">
+              {taskIds.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={id === activeTask}
+                  className={`task-tab ${id === activeTask ? "active" : ""}`}
+                  onClick={() => handleSelectTask(id)}
+                  title={`${taskLabel(id)} — its own files, compiled and run separately`}
+                >
+                  {taskLabel(id)}
+                </button>
+              ))}
+              <span className="task-tabs-hint">
+                One submit covers every task.
+              </span>
+            </div>
+          )}
           <div className="editor-row">
             <FilePanel
               files={files}
@@ -591,13 +733,19 @@ function App({
               activeFile={activeFile}
               onSelectFile={setActiveFile}
               readOnly={isOutputBuffer}
+              // Prompt 1: every captured event is tagged with the task it
+              // happened in, and the editor keeps a separate Monaco model per
+              // task so undo history and the telemetry baseline never bleed
+              // across questions. `taskLabel` only ever decorates alert text.
+              taskId={activeTask}
+              taskLabel={isMultiTask ? taskLabel(activeTask) : null}
             />
           </div>
           <Terminal
             events={consoleEvents}
             stdin={stdin}
-            onStdinChange={setStdin}
-            onClear={() => setConsoleEvents([])}
+            onStdinChange={(next) => patchTask(activeTask, { stdin: next })}
+            onClear={() => patchTask(activeTask, { consoleEvents: [] })}
             running={isRunning}
             disabled={isSubmitted}
           />

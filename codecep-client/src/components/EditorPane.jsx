@@ -85,6 +85,12 @@ export default function EditorPane({
   activeFile,
   onSelectFile,
   readOnly = false,
+  // Multi-task exams (Prompt 1). `taskId` is stamped on every captured event
+  // alongside `fileName`, so forensics can judge each question separately.
+  // `taskLabel` is null on a single-task exam and only ever decorates the text
+  // of a Tier-1 alert, so the instructor knows WHICH task fired it.
+  taskId = null,
+  taskLabel = null,
 }) {
   const lastKeystrokeTime = useRef(Date.now());
   const prevCode = useRef(code);
@@ -99,6 +105,14 @@ export default function EditorPane({
   // Safe because @monaco-editor/react suppresses onChange for programmatic
   // `value` syncs (it sets an internal guard around its executeEdits call), so
   // a file switch never reaches handleChange at all.
+  //
+  // Prompt 1 — the TASK is part of this identity, not just the file name. Two
+  // tasks both have a main.cpp, so switching from Task 1's main.cpp to Task 2's
+  // changes the buffer completely while `activeFile` stays the string
+  // "main.cpp". Keyed on the file alone, the baseline would not be re-anchored
+  // and the next real keystroke would report a delta the size of the whole
+  // difference between the two tasks' programs — a false ILLEGAL_PASTE, which
+  // is precisely the failure this guard exists to prevent.
   useEffect(() => {
     prevCode.current = code;
     lastKeystrokeTime.current = Date.now();
@@ -110,18 +124,21 @@ export default function EditorPane({
     // could sit in an unfocused file untouched. Submit-time validation is the
     // backstop; this is the live half.
     const leaving = prevFileRef.current;
-    if (leaving && leaving.name !== activeFile) validateFileNow(leaving.name, leaving.code);
-    prevFileRef.current = { name: activeFile, code };
-    // Intentionally keyed on the FILE, not the code: re-anchoring on every
-    // keystroke would zero out every charDelta.
+    if (leaving && (leaving.name !== activeFile || leaving.taskId !== taskId)) {
+      validateFileNow(leaving.taskId, leaving.name, leaving.code);
+    }
+    prevFileRef.current = { taskId, name: activeFile, code };
+    // Intentionally keyed on the FILE and TASK, not the code: re-anchoring on
+    // every keystroke would zero out every charDelta.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeFile]);
+  }, [activeFile, taskId]);
 
   // Mirrors the active file so the effect above can validate the one just left.
   // Updated on every keystroke so the validated text is current, not stale.
   useEffect(() => {
-    if (prevFileRef.current?.name === activeFile) prevFileRef.current.code = code;
-  }, [code, activeFile]);
+    const prev = prevFileRef.current;
+    if (prev?.name === activeFile && prev?.taskId === taskId) prev.code = code;
+  }, [code, activeFile, taskId]);
 
   // Paste provenance (internal vs external) — session-local content history.
   // We compare pasted text against what THIS session has already contained;
@@ -212,10 +229,14 @@ export default function EditorPane({
   const isCodeBuffer = activeFile ? kindOf(activeFile) === "code" : true;
 
   // ── AST validation (shared by the live debounce and switch-away) ───────────
-  // De-duplication is keyed per FILE now: two files can legitimately hold
+  // De-duplication is keyed per TASK+FILE: two files can legitimately hold
   // different violations at once, and a single shared signature would let the
-  // second one be swallowed as a repeat of the first.
-  async function validateFileNow(fileName, sourceText) {
+  // second one be swallowed as a repeat of the first. Two tasks' main.cpp files
+  // are different files for exactly the same reason.
+  //
+  // All tasks share ONE allowlist (the assignment's week), so what counts as a
+  // violation is unchanged — only the bookkeeping is per task.
+  async function validateFileNow(fileTaskId, fileName, sourceText) {
     if (isSubmittedRef.current) return; // Immune Phase
     if (!fileName || kindOf(fileName) !== "code") return; // never parse data files
     try {
@@ -228,23 +249,25 @@ export default function EditorPane({
         }),
       });
       const { isValid, violations } = await res.json();
+      const key = `${fileTaskId ?? ""}::${fileName}`;
+      const where = taskLabel ? `${taskLabel} / ${fileName}` : fileName;
       if (!isValid && violations.length > 0) {
-        const sig = `${fileName}:${violations[0].nodeType}:${violations[0].line}`;
-        if (sig !== lastViolationSig.current[fileName]) {
-          lastViolationSig.current[fileName] = sig;
+        const sig = `${key}:${violations[0].nodeType}:${violations[0].line}`;
+        if (sig !== lastViolationSig.current[key]) {
+          lastViolationSig.current[key] = sig;
           const payload = {
             type: "AST_VIOLATION",
             studentId,
             sessionId: sessionIdRef?.current ?? null,
             timestamp: Date.now(),
-            detail: `${violations.length} violation(s) in ${fileName}: ${violations[0]?.nodeType ?? "unknown"}`,
+            detail: `${violations.length} violation(s) in ${where}: ${violations[0]?.nodeType ?? "unknown"}`,
           };
           debugLog("[EMIT] AST_VIOLATION", payload);
           socket.emit("alert", payload);
         }
       } else {
         // This file is clean now — reset so its next violation alerts afresh.
-        delete lastViolationSig.current[fileName];
+        delete lastViolationSig.current[key];
       }
     } catch {
       // Silently swallow — do not emit on network/API errors
@@ -292,6 +315,11 @@ export default function EditorPane({
       // redundant field costs bytes on every event of every exam. Anything
       // derivable (inserted/deleted counts) is derived at read time instead.
       fileName: activeFile ?? null,
+      // Multi-task (Prompt 1): which question of the exam this keystroke was
+      // typed into. Stamped at capture time, so an event carries its task even
+      // if the student has moved on by the time the buffer flushes. Null on a
+      // single-task exam — readers treat that as the one default task.
+      taskId,
       // Single-change events (every keystroke, every ordinary paste) store the
       // edit flat; the multi-change case (multi-cursor, replace-all) keeps the
       // full list. The replay engine reads both through one helper.
@@ -351,7 +379,7 @@ export default function EditorPane({
           studentId,
           sessionId: sessionIdRef?.current ?? null,
           timestamp: event.timestamp,
-          detail: `external paste, +${event.charDelta} chars`,
+          detail: `external paste, +${event.charDelta} chars${taskLabel ? ` in ${taskLabel}` : ""}`,
         };
         debugLog("[EMIT] ILLEGAL_PASTE (no paste event — drag-drop or programmatic)", payload);
         socket.emit("alert", payload);
@@ -368,8 +396,9 @@ export default function EditorPane({
       return;
     }
     const codeAtKeystroke = next;
+    const taskAtKeystroke = taskId;
     debounceTimer.current = setTimeout(
-      () => validateFileNow(activeFile, codeAtKeystroke),
+      () => validateFileNow(taskAtKeystroke, activeFile, codeAtKeystroke),
       1500,
     );
 
@@ -419,7 +448,7 @@ export default function EditorPane({
       studentId,
       sessionId: sessionIdRef?.current ?? null,
       timestamp: event.timestamp,
-      detail: `external paste, +${event.charDelta} chars`,
+      detail: `external paste, +${event.charDelta} chars${taskLabel ? ` in ${taskLabel}` : ""}`,
     };
     debugLog("[EMIT] ILLEGAL_PASTE", payload);
     socket.emit("alert", payload);
@@ -469,8 +498,11 @@ export default function EditorPane({
         <Editor
           height="100%"
           // `path` gives each file its own Monaco model, so undo history and
-          // scroll position survive switching between them.
-          path={activeFile}
+          // scroll position survive switching between them. Prompt 1 qualifies
+          // it by task: two tasks each have a main.cpp, and sharing one model
+          // between them would splice their undo histories together and show
+          // one task's text under the other's tab.
+          path={taskId ? `${taskId}/${activeFile}` : activeFile}
           language={language}
           value={code}
           onChange={handleChange}

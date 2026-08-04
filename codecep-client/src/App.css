@@ -57,6 +57,57 @@ body.is-splitting .main-content {
   overflow: hidden;
 }
 
+/* Task tabs (Prompt 1) — one per question of a multi-task exam. They sit
+   ABOVE the file rail and console because switching tasks swaps the entire
+   workspace beneath them, and OUTSIDE the PDF column because one question
+   sheet covers every task. Rendered only when taskCount > 1, so a single-task
+   exam carries no extra chrome. */
+.task-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+
+.task-tab {
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.task-tab:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.task-tab.active {
+  background: var(--surface-2);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* States what the tabs do NOT mean: there is one submission for the whole
+   exam, not one per task. Cheaper than a student discovering that at the end. */
+.task-tabs-hint {
+  margin-left: auto;
+  padding-left: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
 /* File rail + editor side by side, with the console spanning both beneath
    them (Session 23). The console belongs to the whole workspace, not to one
    file, so it is not nested inside this row. */

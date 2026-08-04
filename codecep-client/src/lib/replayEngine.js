@@ -93,11 +93,70 @@ export function applyChanges(text, changes) {
   return out;
 }
 
-const fileOf = (ev) => ev?.fileName ?? DEFAULT_FILE;
+// ── Multi-task exams (Prompt 1) ─────────────────────────────────────────────
+// A multi-task session has several tasks each holding their own main.cpp. The
+// replay keys everything by file, so those two files MUST NOT share an
+// identity — replaying Task 2's edits into Task 1's buffer would produce
+// nonsense text and then fail every snapshot check.
+//
+// The fix is deliberately narrow: when (and only when) a session actually spans
+// more than one task, a file's identity becomes `task2/main.cpp`. A single-task
+// session — which is every session recorded before this feature, and every
+// taskCount=1 exam after it — is not qualified at all, so it replays through
+// byte-for-byte the same code path it always did.
+//
+// The DVR therefore shows a multi-task session as ONE continuous timeline with
+// task-qualified names in its file strip: the instructor sees the student move
+// between questions in real time. Per-task playback controls and the merged
+// cross-task report are Prompt 2.
+export const DEFAULT_TASK = "task1";
+
+function taskIdOf(ev) {
+  const id = ev?.taskId;
+  return typeof id === "string" && id.length > 0 ? id : DEFAULT_TASK;
+}
+
+/** Does this session span more than one task? Decides qualification, once. */
+function isMultiTaskSession(events, snapshots) {
+  const ids = new Set();
+  for (const ev of events) ids.add(taskIdOf(ev));
+  for (const snap of snapshots) {
+    const perTask = snap?.taskSnapshots;
+    if (perTask && typeof perTask === "object") for (const id of Object.keys(perTask)) ids.add(id);
+    if (ids.size > 1) return true;
+  }
+  return ids.size > 1;
+}
+
+function qualify(taskId, fileName, multiTask) {
+  return multiTask ? `${taskId}/${fileName}` : fileName;
+}
+
+const fileOf = (ev, multiTask = false) =>
+  qualify(taskIdOf(ev), ev?.fileName ?? DEFAULT_FILE, multiTask);
 
 // Per-flush workspace map, tolerating pre-v2 snapshots that only carry the
-// single active-buffer string.
-function snapshotFiles(snapshot) {
+// single active-buffer string. On a multi-task session the per-TASK snapshot is
+// the only complete one — `fileSnapshots` holds just the active task's files —
+// so it is preferred, and its names are qualified to match the events'.
+function snapshotFiles(snapshot, multiTask = false) {
+  // The per-task record is the most complete one whenever it exists — on a
+  // multi-task session `fileSnapshots` holds only the ACTIVE task's files — so
+  // it wins. On a single-task session qualification is a no-op, so the names
+  // come back plain and nothing downstream can tell the difference.
+  const perTask = snapshot?.taskSnapshots;
+  if (perTask && typeof perTask === "object") {
+    const out = {};
+    for (const [taskId, taskFiles] of Object.entries(perTask)) {
+      for (const [name, text] of Object.entries(taskFiles ?? {})) {
+        out[qualify(taskId, name, multiTask)] = text;
+      }
+    }
+    return out;
+  }
+  // A multi-task window with no per-task snapshot cannot be checked against
+  // anything; the caller records that rather than assuming the replay is right.
+  if (multiTask) return null;
   if (snapshot?.fileSnapshots && typeof snapshot.fileSnapshots === "object") {
     return snapshot.fileSnapshots;
   }
@@ -126,7 +185,12 @@ export function buildReplay(data, opts = {}) {
 
   if (!snapshots.length || !events.length) {
     const names = snapshots.length
-      ? Object.keys(snapshotFiles(snapshots[snapshots.length - 1]))
+      ? Object.keys(
+          snapshotFiles(
+            snapshots[snapshots.length - 1],
+            isMultiTaskSession(events, snapshots),
+          ) ?? { [DEFAULT_FILE]: "" },
+        )
       : [DEFAULT_FILE];
     return {
       totalDurationMs: 0,
@@ -303,13 +367,17 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
     for (let i = Math.max(0, cursor); i < events.length; i++) windowOf[i] = snapshots.length - 1;
   }
 
+  // Multi-task sessions qualify file identity by task (see qualify above), so
+  // Task 1's main.cpp and Task 2's main.cpp are never confused for each other.
+  const multiTask = isMultiTaskSession(events, snapshots);
+
   // Every file that ever appears, in first-seen order.
   const files = [];
   const seeFile = (name) => {
     if (!files.includes(name)) files.push(name);
   };
-  events.forEach((e) => seeFile(fileOf(e)));
-  snapshots.forEach((s) => Object.keys(snapshotFiles(s)).forEach(seeFile));
+  events.forEach((e) => seeFile(fileOf(e, multiTask)));
+  snapshots.forEach((s) => Object.keys(snapshotFiles(s, multiTask) ?? {}).forEach(seeFile));
 
   // ── Checkpoint pass ───────────────────────────────────────────────────────
   // Replay every edit forward per file, and at each flush boundary CHECK the
@@ -330,15 +398,22 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
   for (let w = 0; w < snapshots.length; w++) {
     while (idx < events.length && windowOf[idx] === w) {
       const ev = events[idx];
-      const f = fileOf(ev);
+      const f = fileOf(ev, multiTask)
       current.set(f, applyChanges(current.get(f) ?? "", changesOf(ev)));
       idx++;
     }
-    const recorded = snapshotFiles(snapshots[w]);
-    for (const [name, text] of Object.entries(recorded)) {
-      if ((current.get(name) ?? "") !== text) {
-        inexactWindows.add(w);
-        current.set(name, text); // heal, so later windows stay anchored
+    const recorded = snapshotFiles(snapshots[w], multiTask);
+    if (recorded === null) {
+      // A multi-task window with no per-task snapshot cannot be checked against
+      // anything. Silence would amount to claiming exactness we did not verify,
+      // so the window counts as inexact and the player says so.
+      inexactWindows.add(w);
+    } else {
+      for (const [name, text] of Object.entries(recorded)) {
+        if ((current.get(name) ?? "") !== text) {
+          inexactWindows.add(w);
+          current.set(name, text); // heal, so later windows stay anchored
+        }
       }
     }
     checkpoints.push(new Map(current));
@@ -360,7 +435,7 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
   events.forEach((ev, i) => {
     const t = Math.max(prevT, ev.timestamp - t0); // keep monotonic
     prevT = t;
-    const fileName = fileOf(ev);
+    const fileName = fileOf(ev, multiTask);
     frames.push({ t, i, w: windowOf[i], fileName, actionType: ev.actionType, charDelta: ev.charDelta });
 
     // Paste marks now carry the REAL inserted range — no interpolation.
@@ -424,7 +499,7 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
     for (let i = 0; i < events.length; i++) {
       if (windowOf[i] !== w) continue;
       if (i > eventIdx) break;
-      if (fileOf(events[i]) !== fileName) continue;
+      if (fileOf(events[i], multiTask) !== fileName) continue;
       text = applyChanges(text, changesOf(events[i]));
     }
     return text;

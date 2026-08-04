@@ -79,6 +79,39 @@ export function createWorkspace(initialCode = "") {
   return [{ name: ENTRY_FILE, content: initialCode }];
 }
 
+// ── Tasks (multi-task exams, Prompt 1) ──────────────────────────────────────
+// An exam can be a midterm with N questions. A TASK is deliberately
+// lightweight: an id, a label, and its OWN file workspace — same file rules,
+// same blank start, same entry point. One PDF, one allowlist and one submit
+// still cover the whole exam; only the workspace multiplies.
+//
+// Mirrors the server's forensics/metrics.ts (DEFAULT_TASK / taskLabel) — keep
+// the two in step, as with the file model above.
+
+export const MAX_TASKS = 6;
+export const DEFAULT_TASK = "task1";
+
+/** Stable id for the Nth task (0-based index): 0 → 'task1'. */
+export function taskIdAt(index) {
+  return `task${index + 1}`;
+}
+
+/** Human label shown on the tab and in reports: 'task3' → 'Task 3'. */
+export function taskLabel(taskId) {
+  const match = /^task(\d+)$/.exec(taskId ?? "");
+  return match ? `Task ${match[1]}` : (taskId ?? "Task 1");
+}
+
+/**
+ * The task ids for an assignment. A missing/invalid count means ONE task, i.e.
+ * exactly the single-workspace exam that existed before this feature.
+ */
+export function makeTaskIds(taskCount) {
+  const n = Number.isFinite(taskCount) ? Math.floor(taskCount) : 1;
+  const clamped = Math.min(Math.max(n, 1), MAX_TASKS);
+  return Array.from({ length: clamped }, (_, i) => taskIdAt(i));
+}
+
 // Captured program-output files live alongside the workspace but are NOT part
 // of it — they are read-only results, and a program that rewrites its own input
 // (ofstream on an existing data.txt) would otherwise collide with the editable

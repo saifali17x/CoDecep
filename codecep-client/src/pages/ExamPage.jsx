@@ -89,6 +89,11 @@ export default function ExamPage() {
       // boilerplate is code the student neither typed nor pasted, which
       // muddies the authorship metric's accounting of the final program.
       initialCode=""
+      // Prompt 1: how many questions this exam has. Each gets its own file
+      // workspace behind its own tab; one PDF, one allowlist and one submit
+      // still cover the lot. Absent on assignments created before this
+      // feature — those default to the single-task exam they already were.
+      taskCount={assignment.taskCount ?? 1}
     />
   );
 }

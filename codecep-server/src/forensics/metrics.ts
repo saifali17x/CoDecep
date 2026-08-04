@@ -42,6 +42,13 @@ export interface PlaybackEvent {
   rangeLength?: number
   insertedText?: string
   changes?: { o: number; d: number; t: string }[]
+  /**
+   * Multi-task exams (Prompt 1) — which task of the exam this keystroke belongs
+   * to. Optional for exactly the same reason `fileName` is: every session
+   * already in the database predates tasks, and absence means "the one and only
+   * task" rather than "unknown".
+   */
+  taskId?: string | null
 }
 
 export interface PlaybackEntry {
@@ -49,7 +56,131 @@ export interface PlaybackEntry {
   codeSnapshot: string
   /** Session 24 — the whole workspace at this flush. Absent pre-v2. */
   fileSnapshots?: Record<string, string> | null
+  /**
+   * Multi-task exams (Prompt 1) — EVERY task's workspace at this flush, not
+   * just the active one. `fileSnapshots` above keeps its existing meaning (the
+   * active task's files), so pre-multi-task readers are unaffected; this is the
+   * source of truth for per-task forensics.
+   */
+  taskSnapshots?: Record<string, Record<string, string>> | null
   events: PlaybackEvent[]
+}
+
+// ── Tasks as a JSONB dimension (multi-task exams, Prompt 1) ────────────────
+// A task is deliberately lightweight — an id, a label, and its own file
+// workspace. There is no Task table: tasks are attributed the same way files
+// were in Session 24, which reuses plumbing that is already proven and keeps
+// every pre-multi-task session readable without a data migration.
+export const DEFAULT_TASK = 'task1'
+
+/** A missing taskId means the session's single default task, never "unknown". */
+export function taskIdOf(taskId: string | null | undefined): string {
+  return typeof taskId === 'string' && taskId.length > 0 ? taskId : DEFAULT_TASK
+}
+
+/** Human label for reports: 'task3' → 'Task 3'. Unknown ids pass through. */
+export function taskLabel(taskId: string): string {
+  const match = /^task(\d+)$/.exec(taskId)
+  return match ? `Task ${match[1]}` : taskId
+}
+
+function compareTaskIds(a: string, b: string): number {
+  const na = /^task(\d+)$/.exec(a)
+  const nb = /^task(\d+)$/.exec(b)
+  if (na && nb) return Number(na[1]) - Number(nb[1])
+  return a.localeCompare(b)
+}
+
+/**
+ * Every task this session produced data for, in exam order.
+ *
+ * Reads both the events and the per-flush task snapshots, so a task the student
+ * opened and typed nothing in still appears (its workspace was snapshotted)
+ * rather than silently vanishing from the report.
+ */
+export function taskIdsIn(playbackLog: unknown): string[] {
+  const entries = (playbackLog as PlaybackEntry[]) ?? []
+  const ids = new Set<string>()
+  for (const entry of entries) {
+    for (const event of entry?.events ?? []) ids.add(taskIdOf(event?.taskId))
+    const perTask = entry?.taskSnapshots
+    if (perTask && typeof perTask === 'object') for (const id of Object.keys(perTask)) ids.add(id)
+  }
+  if (ids.size === 0) ids.add(DEFAULT_TASK)
+  return [...ids].sort(compareTaskIds)
+}
+
+/**
+ * Each task's workspace as last flushed: { taskId: { fileName: fullText } }.
+ *
+ * Merged forward rather than read from the final entry alone, so the latest
+ * snapshot of EACH task wins — a task the student left early is still reported
+ * with the files they actually wrote.
+ *
+ * A session with no task snapshots at all (every row written before this
+ * feature) presents its single workspace as `task1`, which is what it always
+ * was. That lets every consumer below treat old and new sessions uniformly.
+ */
+export function finalTaskSnapshots(playbackLog: unknown): Record<string, Record<string, string>> {
+  const entries = (playbackLog as PlaybackEntry[]) ?? []
+  const merged: Record<string, Record<string, string>> = {}
+  for (const entry of entries) {
+    const perTask = entry?.taskSnapshots
+    if (!perTask || typeof perTask !== 'object') continue
+    for (const [taskId, files] of Object.entries(perTask)) {
+      if (files && typeof files === 'object') merged[taskId] = files as Record<string, string>
+    }
+  }
+  if (Object.keys(merged).length > 0) return merged
+  return { [DEFAULT_TASK]: finalFileSnapshots(playbackLog) }
+}
+
+/** Summed length of the CODE files in one workspace — an authorship denominator. */
+export function codeLengthOfFiles(files: Record<string, string> | null | undefined): number {
+  if (!files || typeof files !== 'object') return 0
+  return Object.entries(files)
+    .filter(([name]) => isCodeFileName(name))
+    .reduce((sum, [, text]) => sum + (typeof text === 'string' ? text.length : 0), 0)
+}
+
+/**
+ * The session's playback_log narrowed to ONE task: same entry shape, with each
+ * entry's events filtered to that task and empty entries dropped.
+ *
+ * Returning the same shape is the point — every existing metric then runs over
+ * a single task without knowing tasks exist, so none of their math changes.
+ */
+export function playbackLogForTask(playbackLog: unknown, taskId: string): PlaybackEntry[] {
+  const entries = (playbackLog as PlaybackEntry[]) ?? []
+  const out: PlaybackEntry[] = []
+  for (const entry of entries) {
+    const events = (entry?.events ?? []).filter((e) => taskIdOf(e?.taskId) === taskId)
+    if (events.length > 0) out.push({ ...entry, events })
+  }
+  return out
+}
+
+/**
+ * The burst entries belonging to ONE task.
+ *
+ * burst_history[i] is derived server-side from playback_log[i]'s chunk, so the
+ * two arrays are index-aligned and a burst can be attributed by looking at the
+ * tasks of its own window's events. The stored means are reused verbatim —
+ * Metric C's input is selected, never recomputed, so its math is untouched.
+ */
+export function burstHistoryForTask(
+  playbackLog: unknown,
+  burstHistory: unknown,
+  taskId: string,
+): unknown[] {
+  const entries = (playbackLog as PlaybackEntry[]) ?? []
+  const bursts = (burstHistory as unknown[]) ?? []
+  const out: unknown[] = []
+  for (let i = 0; i < entries.length && i < bursts.length; i++) {
+    const events = entries[i]?.events ?? []
+    if (events.some((e) => taskIdOf(e?.taskId) === taskId)) out.push(bursts[i])
+  }
+  return out
 }
 
 // ── Which files count as CODE ──────────────────────────────────────────────
@@ -269,6 +400,30 @@ export function finalFileSnapshots(playbackLog: unknown): Record<string, string>
  */
 export function finalCodeLengthOf(playbackLog: unknown): number {
   const entries = (playbackLog as PlaybackEntry[]) ?? []
+
+  // Multi-task (Prompt 1): the SESSION's program is every task's program. The
+  // numerator here is every event in the session, so the denominator has to
+  // span every task too — scoring all three tasks' keystrokes against one
+  // task's files would push typedRatio far above 1 and make the session-level
+  // authorship reading meaningless. Per-task denominators are computed
+  // separately (codeLengthOfFiles) and are the sharper signal.
+  //
+  // Falls through untouched when no task snapshots exist, so every session
+  // recorded before this feature keeps its exact previous value.
+  const hasTaskSnapshots = entries.some(
+    (entry) =>
+      entry?.taskSnapshots &&
+      typeof entry.taskSnapshots === 'object' &&
+      Object.keys(entry.taskSnapshots).length > 0,
+  )
+  if (hasTaskSnapshots) {
+    const total = Object.values(finalTaskSnapshots(playbackLog)).reduce(
+      (sum, files) => sum + codeLengthOfFiles(files),
+      0,
+    )
+    if (total > 0) return total
+  }
+
   for (let i = entries.length - 1; i >= 0; i--) {
     const perFile = entries[i]?.fileSnapshots
     if (perFile && typeof perFile === 'object') {

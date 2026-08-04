@@ -1,0 +1,11 @@
+-- Multi-task exams (Prompt 1 of 2).
+--
+-- An assignment can now carry N tasks (a midterm's N questions). The tasks
+-- themselves live as a dimension inside the existing session JSONB — taskId on
+-- each keystroke event, taskSnapshots per flush — exactly as per-file
+-- attribution was added in Session 24. This one column is the only structural
+-- fact that has to outlive a session, so it is the only schema change.
+--
+-- DEFAULT 1 is what makes this backward compatible: every existing assignment
+-- keeps behaving as the single-task exam it already was.
+ALTER TABLE "assignments" ADD COLUMN IF NOT EXISTS "taskCount" INTEGER NOT NULL DEFAULT 1;

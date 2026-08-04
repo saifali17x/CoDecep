@@ -399,3 +399,110 @@ describe("buildReplay — exact capture (v2)", () => {
     expect(r.stateAt(r.totalDurationMs)).toEqual({ fileName: "main.cpp", text: "ab" });
   });
 });
+
+// ── Multi-task exams (Prompt 1) ─────────────────────────────────────────────
+// Two tasks each own a main.cpp. The danger is that the replay treats them as
+// ONE file — Task 2's edits would be applied to Task 1's text, producing a
+// buffer that never existed. These pin the separation, and pin that a
+// single-task session is not touched by any of it.
+describe("buildReplay — multi-task sessions", () => {
+  /** A flush carrying EVERY task's workspace. */
+  const tsnap = (
+    flushedAt: number,
+    taskSnapshots: Record<string, Record<string, string>>,
+    eventCount: number,
+  ) => ({ flushedAt, codeSnapshot: "", fileSnapshots: null, taskSnapshots, eventCount });
+
+  function typeInto(task: string, file: string, text: string, startTs: number) {
+    return [...text].map((ch, i) =>
+      xev(startTs + i * 100, file, i, 0, ch, { taskId: task }),
+    );
+  }
+
+  it("keeps two tasks' main.cpp separate and stays exact", () => {
+    const t1 = typeInto("task1", "main.cpp", "int a;", 1000);
+    const t2 = typeInto("task2", "main.cpp", "double b;", 5000);
+    const events = [...t1, ...t2];
+    const r = buildReplay(
+      {
+        snapshots: [
+          tsnap(
+            30000,
+            { task1: { "main.cpp": "int a;" }, task2: { "main.cpp": "double b;" } },
+            events.length,
+          ),
+        ],
+        events,
+        openedAt: 0,
+      },
+      { initialText: "" },
+    );
+    // Qualified identity: neither task's program leaks into the other.
+    expect(r.exact).toBe(true);
+    expect(r.files).toEqual(["task1/main.cpp", "task2/main.cpp"]);
+    expect(r.stateAt(r.totalDurationMs)).toEqual({
+      fileName: "task2/main.cpp",
+      text: "double b;",
+    });
+  });
+
+  it("shows the student mid-way through Task 1, before Task 2 was opened", () => {
+    const t1 = typeInto("task1", "main.cpp", "int a;", 1000);
+    const t2 = typeInto("task2", "main.cpp", "double b;", 5000);
+    const events = [...t1, ...t2];
+    const r = buildReplay(
+      {
+        snapshots: [
+          tsnap(
+            30000,
+            { task1: { "main.cpp": "int a;" }, task2: { "main.cpp": "double b;" } },
+            events.length,
+          ),
+        ],
+        events,
+        openedAt: 0,
+      },
+      { initialText: "" },
+    );
+    // t=1300 is the 4th keystroke of Task 1 — "int " so far, Task 2 untouched.
+    const state = r.stateAt(1300);
+    expect(state.fileName).toBe("task1/main.cpp");
+    expect(state.text).toBe("int ");
+  });
+
+  it("refuses to claim exactness for a multi-task window it cannot verify", () => {
+    const events = typeInto("task1", "main.cpp", "int a;", 1000).concat(
+      typeInto("task2", "main.cpp", "x", 5000),
+    );
+    const r = buildReplay(
+      {
+        // No taskSnapshots on the window: nothing to check the reconstruction
+        // against, so the replay must say so rather than assume it is right.
+        snapshots: [xsnap(30000, { "main.cpp": "int a;" }, events.length)],
+        events,
+        openedAt: 0,
+      },
+      { initialText: "" },
+    );
+    expect(r.exact).toBe(false);
+  });
+
+  it("leaves a single-task v2 session completely unqualified", () => {
+    // Every event carries taskId 'task1' — one task, so nothing is renamed and
+    // the session replays exactly as a pre-multi-task one does.
+    const events = typeInto("task1", "main.cpp", "int a;", 1000);
+    const r = buildReplay(
+      {
+        snapshots: [
+          tsnap(30000, { task1: { "main.cpp": "int a;" } }, events.length),
+        ],
+        events,
+        openedAt: 0,
+      },
+      { initialText: "" },
+    );
+    expect(r.files).toEqual(["main.cpp"]);
+    expect(r.exact).toBe(true);
+    expect(r.stateAt(r.totalDurationMs)).toEqual({ fileName: "main.cpp", text: "int a;" });
+  });
+});
