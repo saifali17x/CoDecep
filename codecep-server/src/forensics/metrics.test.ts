@@ -21,6 +21,9 @@ import {
   codeLengthOfFiles,
   playbackLogForTask,
   burstHistoryForTask,
+  runCountForTask,
+  computeMergedReview,
+  flaggedMetricsOf,
 } from './metrics'
 
 // ── Metric C: Robotic Variance ─────────────────────────────────────────────
@@ -515,5 +518,119 @@ describe('multi-task selectors', () => {
       },
     ]
     expect(playbackLogForTask(legacy, DEFAULT_TASK)[0].events).toHaveLength(1)
+  })
+})
+
+// ── Per-task run counts (Prompt 2 — gap #29) ───────────────────────────────
+
+describe('runCountForTask', () => {
+  it('reads a task\'s own count from the recorded map', () => {
+    const map = { task1: 5, task2: 1 }
+    expect(runCountForTask(map, 'task1', 6, 2)).toEqual({ runCount: 5, scope: 'task' })
+    expect(runCountForTask(map, 'task2', 6, 2)).toEqual({ runCount: 1, scope: 'task' })
+  })
+
+  it('reports 0 runs at TASK scope for a tracked task that was never run', () => {
+    // The map exists, so the absence of the key is a measurement, not a gap:
+    // this task genuinely was never compiled.
+    expect(runCountForTask({ task1: 4 }, 'task3', 4, 3)).toEqual({ runCount: 0, scope: 'task' })
+  })
+
+  it('falls back to the session total at TASK scope for a single-task session', () => {
+    // With one task the session total IS that task's count, so it is honest to
+    // report it as measured.
+    expect(runCountForTask(null, 'task1', 3, 1)).toEqual({ runCount: 3, scope: 'task' })
+  })
+
+  it('falls back to the session total at SESSION scope for a legacy multi-task session', () => {
+    // Recorded before per-task tracking: the total is all there is, and it must
+    // be labelled rather than repeated per task as though measured there.
+    expect(runCountForTask(undefined, 'task2', 7, 3)).toEqual({ runCount: 7, scope: 'session' })
+  })
+
+  it('ignores a non-object record and never returns a negative or fractional count', () => {
+    expect(runCountForTask('nonsense', 'task1', 2, 1)).toEqual({ runCount: 2, scope: 'task' })
+    expect(runCountForTask({ task1: -3 }, 'task1', 9, 2)).toEqual({ runCount: 0, scope: 'task' })
+    expect(runCountForTask({ task1: 2.7 }, 'task1', 9, 2)).toEqual({ runCount: 2, scope: 'task' })
+  })
+})
+
+// ── Merged review signal (Prompt 2 — gap #31) ──────────────────────────────
+
+describe('computeMergedReview', () => {
+  const clean = {
+    label: 'Task 1',
+    metricA: { flag: false },
+    metricB: { flag: false },
+    metricC: { flag: false },
+    authorship: { flag: false },
+    astAudit: { flag: false },
+  }
+  const pasted = {
+    label: 'Task 2',
+    metricA: { flag: false },
+    metricB: { flag: false },
+    metricC: { flag: false },
+    authorship: { flag: true },
+    astAudit: { flag: false },
+  }
+
+  it('flags the session when ANY task flags, even though the session average does not', () => {
+    // This is gap #31 exactly: two hand-typed tasks pull the session-wide
+    // authorship back over the threshold, so the session-level result is clean.
+    const sessionLevel = {
+      metricA: { flag: false },
+      metricB: { flag: false },
+      metricC: { flag: false },
+      authorship: { flag: false },
+      astAudit: { flag: false },
+    }
+    const merged = computeMergedReview(
+      { task1: clean, task2: pasted, task3: { ...clean, label: 'Task 3' } },
+      sessionLevel,
+      3,
+    )
+    expect(merged.flag).toBe(true)
+    expect(merged.basis).toBe('any-task-flagged')
+    expect(merged.flaggedTaskCount).toBe(1)
+    expect(merged.flaggedTasks).toEqual([
+      { taskId: 'task2', label: 'Task 2', metrics: ['authorship'] },
+    ])
+    expect(merged.reason).toContain('Task 2')
+    expect(merged.reason).toContain('instructor review')
+  })
+
+  it('does not flag when no task and no session-wide signal flags', () => {
+    const merged = computeMergedReview({ task1: clean }, { authorship: { flag: false } }, 1)
+    expect(merged.flag).toBe(false)
+    expect(merged.flaggedTaskCount).toBe(0)
+    expect(merged.reason).toBeNull()
+  })
+
+  it('flags on a session-wide signal even when every task reads clean', () => {
+    const merged = computeMergedReview({ task1: clean }, { astAudit: { flag: true } }, 1)
+    expect(merged.flag).toBe(true)
+    expect(merged.sessionFlaggedMetrics).toEqual(['astAudit'])
+    expect(merged.reason).toContain('Session-wide')
+  })
+
+  it('lists every flagged metric of a task, in exam order', () => {
+    const merged = computeMergedReview(
+      {
+        task2: { ...pasted, metricA: { flag: true } },
+        task1: { ...clean, metricC: { flag: true } },
+      },
+      {},
+      2,
+    )
+    expect(merged.flaggedTasks.map((t) => t.taskId)).toEqual(['task1', 'task2'])
+    expect(merged.flaggedTasks[1].metrics).toEqual(['metricA', 'authorship'])
+  })
+
+  it('flaggedMetricsOf ignores missing metrics and non-true flags', () => {
+    expect(flaggedMetricsOf(null)).toEqual([])
+    expect(flaggedMetricsOf({ metricB: { flag: 'yes' }, authorship: { flag: true } })).toEqual([
+      'authorship',
+    ])
   })
 })

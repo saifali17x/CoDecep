@@ -19,6 +19,16 @@ model Session {
   // it to []; the socket relay appends while the session is IN_PROGRESS.
   tier1_log        Json?
   runCount         Int      @default(0)
+  // Multi-task exams (Prompt 2) — how many times the student ran EACH task:
+  // { task1: 3, task2: 1 }. Metric A is a compile count, and on a multi-task
+  // exam each task is a separate program, so one session-level scalar could
+  // never say which question was iterated on. `runCount` above stays the
+  // session TOTAL (unchanged, every existing reader keeps working).
+  //
+  // Deliberately NULLABLE with NO default, the same discipline as tier1_log:
+  // NULL means "this session predates per-task run tracking" — the report then
+  // falls back to the session total rather than claiming a task ran zero times.
+  runCountByTask   Json?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

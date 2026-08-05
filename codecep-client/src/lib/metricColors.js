@@ -67,6 +67,50 @@ export function inconclusiveSeverity() {
   return { level: "grey", label: "not assessable — see authorship" };
 }
 
+// Merged review signal (Prompt 2) — the session-level metrics are computed over
+// ALL events, so on a multi-task exam they are an AVERAGE: one fully-pasted
+// task beside two hand-typed ones can read as a clean session. The review
+// signal is therefore ANY task flagged, never the average, and a flagged
+// session must never render green just because the average looks fine.
+// `flag: null` = the session was processed before merged review existed → grey
+// "not assessed", which is not the same as a pass.
+export function mergedSeverity(flag, flaggedTaskCount, taskCount) {
+  if (flag === null || flag === undefined) {
+    return { level: "grey", label: "merged review — not assessed" };
+  }
+  if (!flag) {
+    return {
+      level: "green",
+      label:
+        taskCount > 1
+          ? `no task flagged (${taskCount} tasks)`
+          : "no flags for review",
+    };
+  }
+  const n = flaggedTaskCount ?? 0;
+  return {
+    level: "red",
+    label:
+      n > 0 && taskCount > 1
+        ? `${n} of ${taskCount} task(s) flagged for review`
+        : "flagged for review",
+  };
+}
+
+// The submit-time all-files construct sweep, as a severity. Same rule as every
+// other pill: red reads "flagged for review", never an accusation.
+export function astAuditSeverity(flag, violationCount) {
+  if (flag === null || flag === undefined) {
+    return { level: "grey", label: "constructs — not checked" };
+  }
+  return flag
+    ? {
+        level: "red",
+        label: `${violationCount ?? 0} disallowed construct(s) — flagged for review`,
+      }
+    : { level: "green", label: "constructs allowed" };
+}
+
 // Authorship (Session 22) — how much of the submitted program can be accounted
 // for by typing. LOWER typed share = more suspicious. `typedRatio` is optional
 // context; the flag is what the worker decided (MIN_CODE_LEN / TYPED_MIN are

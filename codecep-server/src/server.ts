@@ -43,6 +43,10 @@ import {
   codeLengthOfFiles,
   playbackLogForTask,
   burstHistoryForTask,
+  // Prompt 2 — per-task Metric A (gap #29) and the any-task-flagged merged
+  // review signal (gap #31). Both are pure selectors/derivations too.
+  runCountForTask,
+  computeMergedReview,
   type AuthorshipResult,
 } from './forensics/metrics'
 import { signToken, requireAuth, requireRole } from './auth'
@@ -211,14 +215,21 @@ const forensicsWorker = new Worker(
       const taskFiles = taskSnaps[taskId] ?? {}
       const taskCodeLength = codeLengthOfFiles(taskFiles)
 
+      // Prompt 2 (gap #29) — Metric A is now REAL per task: /api/execute
+      // records which task each Run belonged to in `runCountByTask`. The
+      // selector carries the fallbacks, so a session recorded before per-task
+      // tracking still reports the session total, labelled `scope: 'session'`
+      // rather than pretending it was measured per task.
+      const taskRuns = runCountForTask(
+        session.runCountByTask,
+        taskId,
+        runCount,
+        taskIds.length,
+      )
+
       tasks[taskId] = {
         label: taskLabel(taskId),
-        // Metric A is a COMPILE count and runCount is a single session-level
-        // column, so it cannot yet be attributed to the task a Run belonged to.
-        // Reported at session scope and labelled as such rather than repeated
-        // per task as though it were measured there — per-task run attribution
-        // is a Prompt 2 concern.
-        metricA: { ...computeMetricA(runCount), scope: 'session' as const },
+        metricA: { ...computeMetricA(taskRuns.runCount), scope: taskRuns.scope },
         metricB: markInconclusiveIfSubstantial(
           computeLinearInjection(taskLog),
           LINEAR_INSUFFICIENT_REASON,
@@ -236,6 +247,18 @@ const forensicsWorker = new Worker(
       }
     }
 
+    // ── Merged review signal (Prompt 2 — closes gap #31) ────────────────────
+    // The five session-level keys below are computed over ALL events, which on
+    // a multi-task exam makes them an AVERAGE: a fully-pasted task beside two
+    // hand-typed ones can pull the session's typedRatio back over the threshold
+    // and the whole session reads clean. The REVIEW signal is therefore
+    // any-task-flagged, never the average — a flagged task can no longer hide.
+    const merged = computeMergedReview(
+      tasks,
+      { metricA, metricB, metricC, authorship, astAudit },
+      taskIds.length,
+    )
+
     await prisma.session.update({
       where: { id: sessionId },
       data: {
@@ -249,9 +272,12 @@ const forensicsWorker = new Worker(
           metricC,
           authorship,
           astAudit,
-          // Additive. The merged cross-task report is Prompt 2.
+          // Additive.
           taskCount: taskIds.length,
           tasks,
+          // Prompt 2: the cross-task review signal. Additive too — every
+          // existing reader that only knows the five keys above is unaffected.
+          merged,
         },
       },
     })
@@ -263,10 +289,15 @@ const forensicsWorker = new Worker(
     console.log(`[FORENSICS] session ${sessionId} astAudit flag=${astAudit.flag} files=[${astAudit.checkedFiles.join(', ')}] violations=${astAudit.violations.length} (allowlist: ${astAudit.allowlistSource})`)
     if (isMultiTask) {
       for (const taskId of taskIds) {
-        const t = tasks[taskId] as { authorship: AuthorshipResult; astAudit: { flag: boolean } }
-        console.log(`[FORENSICS] session ${sessionId} ${taskId} authorship flag=${t.authorship.flag} typedRatio=${t.authorship.stats.typedRatio} finalCodeLength=${t.authorship.stats.finalCodeLength} astFlag=${t.astAudit.flag}`)
+        const t = tasks[taskId] as {
+          authorship: AuthorshipResult
+          astAudit: { flag: boolean }
+          metricA: { runCount: number; flag: boolean; scope: string }
+        }
+        console.log(`[FORENSICS] session ${sessionId} ${taskId} authorship flag=${t.authorship.flag} typedRatio=${t.authorship.stats.typedRatio} finalCodeLength=${t.authorship.stats.finalCodeLength} astFlag=${t.astAudit.flag} runs=${t.metricA.runCount}(${t.metricA.scope}) metricAFlag=${t.metricA.flag}`)
       }
     }
+    console.log(`[FORENSICS] session ${sessionId} merged flag=${merged.flag} (${merged.flaggedTaskCount}/${merged.taskCount} task(s) flagged) — ${merged.reason ?? 'no flags for review'}`)
   },
   { connection: redisConnection },
 )
@@ -520,6 +551,15 @@ app.get(
       studentId: session.studentId,
       status: session.status,
       forensicsResults: session.forensicsResults,
+      // Prompt 2 — the merged report header reads "student · assignment ·
+      // N tasks". Both are already loaded for the ownership check above, so
+      // this costs nothing. `taskCount` falls back to the forensics record and
+      // then to 1, so legacy sessions with no assignment still read sensibly.
+      assignmentTitle: session.assignment?.title ?? null,
+      taskCount:
+        session.assignment?.taskCount ??
+        (session.forensicsResults as { taskCount?: number } | null)?.taskCount ??
+        1,
       startedAt: events[0]?.timestamp ?? session.createdAt.getTime(),
       endedAt: events[events.length - 1]?.timestamp ?? session.updatedAt.getTime(),
       // Session 22 (part 2): when the exam was OPENED, as distinct from when
@@ -719,12 +759,17 @@ app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, 
 //     /legacy flow and any older caller keep working unchanged.
 const STDIN_MAX_CHARS = 100_000
 
+// A run is attributed to a task only when the client names one it could
+// actually have produced. Anything else is treated as an unattributed run: it
+// still counts in the session total, it just never invents a task key.
+const TASK_ID_PATTERN = /^task[1-6]$/
+
 app.post('/api/execute', async (req: Request, res: Response) => {
   // Multi-task (Prompt 1): `taskId` names which task's workspace this is — the
   // client only ever sends the ACTIVE task's files, so each task compiles and
-  // runs as the separate program it is. It is carried for the run log only:
-  // runCount is a single session-level column, so a Run cannot yet be
-  // attributed to a task (per-task Metric A is a Prompt 2 concern).
+  // runs as the separate program it is. Prompt 2 (gap #29): that id is now also
+  // what makes Metric A per-task — the run is counted against this task in
+  // `runCountByTask` as well as in the session total.
   const { code, lang, sessionId, stdin, files, taskId } = req.body
 
   const isMultiFile = files !== undefined
@@ -832,12 +877,50 @@ app.post('/api/execute', async (req: Request, res: Response) => {
       `→ status=${data.status?.description ?? 'unknown'} outputFiles=${outputFiles.length}`
     )
 
-    // Increment runCount so Metric A has an accurate compile count
+    // Increment runCount so Metric A has an accurate compile count.
+    // Prompt 2: also attribute the run to the task it belonged to, in ONE
+    // statement so the session total and the per-task breakdown can never drift
+    // apart. `runCount` keeps its exact existing meaning (the session total).
     if (typeof sessionId === 'string' && sessionId.length > 0) {
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { runCount: { increment: 1 } },
-      }).catch(() => { /* session may not exist in tests — silently ignore */ })
+      const runTaskId = typeof taskId === 'string' && TASK_ID_PATTERN.test(taskId) ? taskId : null
+      try {
+        // Retried like the other exam hot paths: a Neon idle-drop used to make
+        // the count silently short, and now that Metric A is assessed PER TASK
+        // a lost run is a wrong per-task reading, not just a smaller total.
+        // Still non-fatal — the student's program already ran, so a failure is
+        // logged and the response is unaffected.
+        await withRetry(async () => {
+          if (runTaskId) {
+            // COALESCE covers both a session that predates the column (NULL)
+            // and a task being run for the first time (key absent).
+            await prisma.$executeRaw`
+              UPDATE sessions
+              SET "runCount"       = "runCount" + 1,
+                  "runCountByTask" = jsonb_set(
+                    COALESCE("runCountByTask", '{}'::jsonb),
+                    ARRAY[${runTaskId}::text],
+                    to_jsonb(COALESCE(("runCountByTask" ->> ${runTaskId}::text)::int, 0) + 1)
+                  ),
+                  "updatedAt"      = NOW()
+              WHERE id = ${sessionId}
+            `
+          } else {
+            // No usable task id (the /legacy flow, an older client): the run
+            // still counts in the session total, but no task key is invented.
+            await prisma.session.update({
+              where: { id: sessionId },
+              data: { runCount: { increment: 1 } },
+            })
+          }
+        })
+      } catch (err) {
+        // The session may simply not exist (tests, a stale id) — that is not
+        // worth a stack trace, but a dropped run must not be invisible either.
+        console.warn(
+          `[EXECUTE] run count not recorded for session ${sessionId}` +
+          `${runTaskId ? ` (${runTaskId})` : ''}: ${err instanceof Error ? err.message : err}`
+        )
+      }
     }
 
     res.status(200).json({
@@ -1270,6 +1353,47 @@ type SessionRow = {
   forensicsResults: unknown
 }
 
+// One task's flags-only row (Prompt 2). Same discipline as the session-level
+// summary above: flags plus the single derived scalar each severity label
+// needs, never full stats and never raw events.
+type TaskBundle = {
+  label?: string
+  metricA?: { flag?: boolean; runCount?: number; scope?: string }
+  metricB?: { flag?: boolean; inconclusive?: boolean }
+  metricC?: { flag?: boolean; inconclusive?: boolean; stats?: { cv?: number | null } }
+  authorship?: { flag?: boolean; stats?: { typedRatio?: number | null } }
+  astAudit?: { flag?: boolean; violations?: unknown[] }
+}
+
+function taskSummary(taskId: string, t: TaskBundle) {
+  return {
+    taskId,
+    label: t.label ?? taskLabel(taskId),
+    metricA: {
+      flag: t.metricA?.flag ?? null,
+      runCount: t.metricA?.runCount ?? null,
+      // 'task' = this task's own run count; 'session' = a pre-tracking session
+      // where only the session total exists. The UI must not present the
+      // second as though it were measured per task.
+      scope: t.metricA?.scope ?? 'session',
+    },
+    metricB: { flag: t.metricB?.flag ?? null, inconclusive: t.metricB?.inconclusive ?? false },
+    metricC: {
+      flag: t.metricC?.flag ?? null,
+      cv: t.metricC?.stats?.cv ?? null,
+      inconclusive: t.metricC?.inconclusive ?? false,
+    },
+    authorship: {
+      flag: t.authorship?.flag ?? null,
+      typedRatio: t.authorship?.stats?.typedRatio ?? null,
+    },
+    astAudit: {
+      flag: t.astAudit?.flag ?? null,
+      violationCount: Array.isArray(t.astAudit?.violations) ? t.astAudit!.violations!.length : 0,
+    },
+  }
+}
+
 function sessionSummary(s: SessionRow) {
   const fr = s.forensicsResults as
     | {
@@ -1277,6 +1401,15 @@ function sessionSummary(s: SessionRow) {
         metricB?: { flag?: boolean; inconclusive?: boolean }
         metricC?: { flag?: boolean; inconclusive?: boolean; stats?: { cv?: number | null } }
         authorship?: { flag?: boolean; stats?: { typedRatio?: number | null } }
+        taskCount?: number
+        tasks?: Record<string, TaskBundle>
+        merged?: {
+          flag?: boolean
+          flaggedTaskCount?: number
+          taskCount?: number
+          flaggedTasks?: { taskId: string; label: string; metrics: string[] }[]
+          reason?: string | null
+        }
       }
     | null
   return {
@@ -1308,6 +1441,31 @@ function sessionSummary(s: SessionRow) {
             flag: fr.authorship?.flag ?? null,
             typedRatio: fr.authorship?.stats?.typedRatio ?? null,
           },
+          // ── Prompt 2 (gap #31) ────────────────────────────────────────────
+          // The five keys above are the session-wide computation, i.e. an
+          // AVERAGE across tasks on a multi-task exam. `merged` is the review
+          // signal: ANY task flagged. A single fully-pasted task can no longer
+          // be washed out by clean ones. Absent on sessions processed before
+          // this existed → null, which the UI renders as "not assessed", never
+          // as a clean pass.
+          taskCount: fr.taskCount ?? 1,
+          merged: fr.merged
+            ? {
+                flag: fr.merged.flag ?? null,
+                flaggedTaskCount: fr.merged.flaggedTaskCount ?? 0,
+                taskCount: fr.merged.taskCount ?? fr.taskCount ?? 1,
+                flaggedTasks: fr.merged.flaggedTasks ?? [],
+                reason: fr.merged.reason ?? null,
+              }
+            : null,
+          // Per-task flags, in exam order. Empty for a legacy session with no
+          // per-task record; a single-task session carries exactly one row,
+          // which the UI collapses rather than showing pointless chrome.
+          tasks: fr.tasks
+            ? Object.entries(fr.tasks)
+                .map(([taskId, t]) => taskSummary(taskId, t))
+                .sort((a, b) => a.taskId.localeCompare(b.taskId, undefined, { numeric: true }))
+            : [],
         }
       : null,
   }

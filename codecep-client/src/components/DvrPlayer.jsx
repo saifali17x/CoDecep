@@ -2,8 +2,9 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
-import { buildReplay } from "../lib/replayEngine";
-import { languageOf } from "../lib/workspace";
+import { buildReplay, replayDataForTask, taskIdsInReplay } from "../lib/replayEngine";
+import { languageOf, taskLabel } from "../lib/workspace";
+import TaskReport, { MergedFlagPill } from "./TaskReport";
 import {
   metricASeverity,
   metricBSeverity,
@@ -50,7 +51,16 @@ function MetricPill({ metricKey, metric }) {
     ? // B/C whose guard tripped on a substantial program: grey, never green.
       inconclusiveSeverity()
     : metricKey === "metricA"
-      ? metricASeverity(metric?.runCount)
+      ? // Prompt 2: a per-task Metric A carries `scope`. 'session' means the
+        // count is the whole session's (this session predates per-task run
+        // tracking), so it is shown grey rather than coloured as though it had
+        // been measured for this task.
+        metric?.scope === "session"
+        ? {
+            level: "grey",
+            label: `${metric?.runCount ?? "—"} run(s) recorded for the whole session, not per task`,
+          }
+        : metricASeverity(metric?.runCount)
       : metricKey === "metricC"
         ? metricCSeverity(metric?.stats?.cv ?? null)
         : metricKey === "authorship"
@@ -157,7 +167,7 @@ function fmtClock(ms) {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export default function DvrPlayer({ sessionId }) {
+export default function DvrPlayer({ sessionId, initialTaskId = null }) {
   const { token } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -167,6 +177,10 @@ export default function DvrPlayer({ sessionId }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(5);
   const [skipIdle, setSkipIdle] = useState(true);
+  // Prompt 2 — WHICH task is being replayed. null = the whole session as one
+  // timeline (the Prompt 1 behavior, and the only view a single-task session
+  // ever shows).
+  const [selectedTask, setSelectedTask] = useState(initialTaskId);
 
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
@@ -196,16 +210,53 @@ export default function DvrPlayer({ sessionId }) {
     };
   }, [sessionId, token]);
 
+  // A caller can open the player straight on one task ("Replay this task" in a
+  // per-task report). Adjusting state during render (React's documented
+  // reset-on-prop-change pattern) rather than in an effect: the selection is
+  // derived from what the caller asked for, so it must not lag a frame behind
+  // it. Keyed on the session too, so switching student drops a Task 3 selection
+  // instead of carrying it into a session that only has two tasks.
+  const selectionKey = `${sessionId}:${initialTaskId ?? ""}`;
+  const [prevSelectionKey, setPrevSelectionKey] = useState(selectionKey);
+  if (prevSelectionKey !== selectionKey) {
+    setPrevSelectionKey(selectionKey);
+    setSelectedTask(initialTaskId ?? null);
+    setT(0);
+    setPlaying(false);
+  }
+
   // Session 22 (part 2): replay is anchored at an EMPTY document, matching the
   // real exam start. It used to anchor at the old starter template, which is
   // now wrong for every flow (Session 25 removed the template entirely) — and
   // anchoring at the first snapshot is what made a first-event paste invisible
   // (see lib/replayEngine.js).
+  // Which tasks this session actually produced data for. A single-task session
+  // (and every session recorded before multi-task exams) yields one id, and
+  // everything task-shaped below then stays out of the way entirely.
+  const taskIds = useMemo(() => (data ? taskIdsInReplay(data) : []), [data]);
+  const isMultiTask = taskIds.length > 1 || (data?.taskCount ?? 1) > 1;
+
+  // Prompt 2 — per-task replay is the SAME engine run over a payload narrowed
+  // to one task, so its reconstruction is still verified against that task's
+  // own recorded snapshots rather than being a second, weaker code path.
   const replay = useMemo(
-    () => (data ? buildReplay(data, { initialText: "" }) : null),
-    [data],
+    () =>
+      data
+        ? buildReplay(selectedTask ? replayDataForTask(data, selectedTask) : data, {
+            initialText: "",
+          })
+        : null,
+    [data, selectedTask],
   );
   const duration = replay?.totalDurationMs ?? 0;
+
+  // Switching task rewinds: the timelines are different lengths and a position
+  // carried across would land somewhere arbitrary.
+  const selectTask = useCallback((taskId) => {
+    setSelectedTask(taskId);
+    setT(0);
+    setPlaying(false);
+  }, []);
 
   // ── Playback loop (rAF; text only re-renders when the frame text changes) ─
   useEffect(() => {
@@ -328,29 +379,61 @@ export default function DvrPlayer({ sessionId }) {
   if (!replay) return null;
 
   const { studentId, status, forensicsResults } = data;
+  // The task whose forensics are shown beside the player. With a task selected
+  // these are that task's OWN numbers; with "All tasks" they are the
+  // session-wide computation (which on a multi-task exam is an average — the
+  // merged pill beside it is the review signal).
+  const taskBundle = selectedTask ? forensicsResults?.tasks?.[selectedTask] ?? null : null;
+  const shown = taskBundle ?? forensicsResults;
 
   return (
     <div className="dvr-panel" tabIndex={0} onKeyDown={handleKeyDown}>
       <div className="dvr-header">
         <span className="dvr-student" title={studentId}>{studentId}</span>
+        {data.assignmentTitle && (
+          <span className="dvr-assignment" title={data.assignmentTitle}>
+            {data.assignmentTitle}
+          </span>
+        )}
         <span className={`dvr-badge ${status === "IN_PROGRESS" ? "in-progress" : "submitted"}`}>
           {status}
         </span>
+        {isMultiTask && (
+          <span className="dvr-count">{data.taskCount ?? taskIds.length} tasks</span>
+        )}
         <span className="dvr-count">
           {replay.eventCount} keystroke events · {data.snapshots.length} snapshots
         </span>
+        {/* The session's REVIEW signal: any task flagged. Shown next to the
+            student so a flagged task inside an otherwise clean-looking session
+            is the first thing read, not something buried in a table. */}
+        {isMultiTask && forensicsResults && (
+          <MergedFlagPill
+            merged={forensicsResults.merged}
+            taskCount={data.taskCount ?? taskIds.length}
+          />
+        )}
       </div>
 
       <div className="dvr-forensics">
         {forensicsResults ? (
           <>
+            {selectedTask && (
+              <span className="dvr-scope-note">
+                Showing {taskLabel(selectedTask)}
+                {taskBundle ? "'s own forensics" : " — no per-task forensics recorded"}:
+              </span>
+            )}
             {Object.keys(METRIC_LABELS).map((key) => (
-              <MetricPill key={key} metricKey={key} metric={forensicsResults[key]} />
+              <MetricPill key={key} metricKey={key} metric={shown?.[key]} />
             ))}
             <span className="dvr-severity-note">
               Colors are severity guidance — "flagged" means flagged for instructor
               review. The run-count and typed-share thresholds are configurable
               defaults; judge them against task complexity.
+              {isMultiTask && !selectedTask
+                ? " These session-level figures span every task; the per-task breakdown below is the sharper reading."
+                : ""}
             </span>
           </>
         ) : (
@@ -359,11 +442,51 @@ export default function DvrPlayer({ sessionId }) {
       </div>
 
       <Tier1Row summary={data.tier1Summary} />
-      <AstAuditRow audit={forensicsResults?.astAudit} />
+      <AstAuditRow audit={shown?.astAudit} />
+
+      {/* Per-task breakdown + merged report (Prompt 2). Rendered only for a
+          genuinely multi-task session: a single-task exam shows exactly the
+          report it always did, with no empty "Task 1" chrome. */}
+      {isMultiTask && forensicsResults?.tasks && (
+        <TaskReport
+          tasks={forensicsResults.tasks}
+          merged={forensicsResults.merged}
+          taskCount={data.taskCount ?? taskIds.length}
+          selectedTaskId={selectedTask}
+          onReplayTask={selectTask}
+        />
+      )}
+
+      {/* Which task is on the player. "All tasks" is the whole session as one
+          timeline; picking a task replays that task's own reconstruction. */}
+      {isMultiTask && (
+        <div className="dvr-tasks">
+          <span className="dvr-tasks-label">Replay:</span>
+          <button
+            className={`dvr-task-tab ${selectedTask === null ? "active" : ""}`}
+            onClick={() => selectTask(null)}
+            title="Replay the whole session as one timeline, across every task"
+          >
+            All tasks
+          </button>
+          {taskIds.map((id) => (
+            <button
+              key={id}
+              className={`dvr-task-tab ${selectedTask === id ? "active" : ""}`}
+              onClick={() => selectTask(id)}
+              title={`Replay ${taskLabel(id)} on its own`}
+            >
+              {taskLabel(id)}
+            </button>
+          ))}
+        </div>
+      )}
 
       {duration === 0 ? (
         <div className="dvr-empty">
-          No keystroke activity recorded for this session yet.
+          {selectedTask
+            ? `No keystroke activity recorded for ${taskLabel(selectedTask)}.`
+            : "No keystroke activity recorded for this session yet."}
         </div>
       ) : (
         <>

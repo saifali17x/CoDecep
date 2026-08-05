@@ -44,6 +44,60 @@
   margin-left: auto;
   white-space: nowrap;
 }
+/* Only the first count pushes to the right edge; the rest sit beside it. */
+.dvr-header .dvr-count ~ .dvr-count { margin-left: 0; }
+
+/* Which exam this session belongs to — part of the merged report header
+   (Prompt 2): student · assignment · N tasks · merged review signal. */
+.dvr-assignment {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Per-task replay selector (Prompt 2). Only rendered for a multi-task session;
+   a single-task exam keeps exactly the chrome it always had. */
+.dvr-tasks {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.dvr-tasks-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  margin-right: var(--sp-1);
+}
+
+.dvr-task-tab {
+  font-size: var(--fs-xs);
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+}
+.dvr-task-tab:hover { color: var(--text); border-color: var(--surface-3); }
+.dvr-task-tab.active {
+  color: var(--link);
+  border-color: var(--accent);
+  background: rgba(56, 139, 253, 0.1);
+}
+
+/* Says WHOSE numbers the pills beside it are — the selected task's, or the
+   session-wide computation. Never leave that ambiguous. */
+.dvr-scope-note {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  align-self: center;
+  margin-right: var(--sp-1);
+}
 
 .dvr-forensics {
   display: flex;

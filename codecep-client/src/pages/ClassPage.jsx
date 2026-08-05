@@ -5,12 +5,14 @@ import { apiFetch } from "../lib/api";
 import AppShell from "../components/AppShell";
 import DvrPlayer from "../components/DvrPlayer";
 import SyllabusManager from "../components/SyllabusManager";
+import TaskReport from "../components/TaskReport";
 import {
   metricASeverity,
   metricBSeverity,
   metricCSeverity,
   authorshipSeverity,
   inconclusiveSeverity,
+  mergedSeverity,
   LEVEL_COLORS,
 } from "../lib/metricColors";
 import "./portal.css";
@@ -72,6 +74,10 @@ export default function ClassPage() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionsError, setSessionsError] = useState("");
   const [replaySessionId, setReplaySessionId] = useState(null);
+  // Prompt 2 — which session's per-task breakdown is expanded, and which task
+  // (if any) the replay below should open on.
+  const [tasksForSession, setTasksForSession] = useState(null);
+  const [replayTaskId, setReplayTaskId] = useState(null);
 
   const isInstructor = klass ? klass.instructorId === user?.id : false;
 
@@ -318,12 +324,21 @@ export default function ClassPage() {
                                   <th title="Metric B — Linear Injection">B</th>
                                   <th title="Metric C — Robotic Variance">C</th>
                                   <th title="Authorship — how much of the final code came from typing">Auth</th>
+                                  <th title="Merged review signal — ANY task flagged, never an average across tasks">
+                                    Review
+                                  </th>
+                                  <th title="Per-task breakdown (multi-task exams)">Tasks</th>
                                   <th>Submitted</th>
                                   <th></th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {sessions.map((s) => (
+                                {sessions.flatMap((s) => {
+                                  const taskRows = s.forensicsResults?.tasks ?? [];
+                                  const sessionTaskCount =
+                                    s.forensicsResults?.taskCount ?? taskRows.length ?? 1;
+                                  const isMulti = sessionTaskCount > 1 && taskRows.length > 1;
+                                  return [
                                   <tr key={s.id}>
                                     <td>{s.studentId}</td>
                                     <td>
@@ -401,14 +416,88 @@ export default function ClassPage() {
                                         <SeverityCell sev={PENDING_SEV} short="—" />
                                       )}
                                     </td>
+                                    {/* Prompt 2 (gap #31): the REVIEW signal is
+                                        any-task-flagged, so a pasted task can
+                                        never hide inside a session average.
+                                        Absent on sessions processed before it
+                                        existed → grey "not assessed". */}
+                                    <td>
+                                      {s.forensicsResults ? (
+                                        <SeverityCell
+                                          sev={mergedSeverity(
+                                            s.forensicsResults.merged?.flag ?? null,
+                                            s.forensicsResults.merged?.flaggedTaskCount,
+                                            sessionTaskCount,
+                                          )}
+                                          short={
+                                            s.forensicsResults.merged?.flag == null
+                                              ? "—"
+                                              : s.forensicsResults.merged.flag
+                                                ? sessionTaskCount > 1
+                                                  ? `${s.forensicsResults.merged.flaggedTaskCount ?? 0}/${sessionTaskCount} flagged`
+                                                  : "flagged"
+                                                : "no flags"
+                                          }
+                                        />
+                                      ) : (
+                                        <SeverityCell sev={PENDING_SEV} short="—" />
+                                      )}
+                                    </td>
+                                    <td>
+                                      {isMulti ? (
+                                        <button
+                                          className="link-btn"
+                                          onClick={() =>
+                                            setTasksForSession(
+                                              tasksForSession === s.id ? null : s.id,
+                                            )
+                                          }
+                                        >
+                                          {tasksForSession === s.id
+                                            ? "Hide tasks"
+                                            : `${sessionTaskCount} tasks`}
+                                        </button>
+                                      ) : (
+                                        // Single-task exam: no empty multi-task
+                                        // chrome, the row reads as it always did.
+                                        <span className="sev-cell" style={{ color: LEVEL_COLORS.grey }}>
+                                          1
+                                        </span>
+                                      )}
+                                    </td>
                                     <td>{s.status === "SUBMITTED" ? fmtTime(s.updatedAt) : "—"}</td>
                                     <td>
-                                      <button className="link-btn" onClick={() => setReplaySessionId(s.id)}>
+                                      <button
+                                        className="link-btn"
+                                        onClick={() => {
+                                          setReplayTaskId(null);
+                                          setReplaySessionId(s.id);
+                                        }}
+                                      >
                                         Replay
                                       </button>
                                     </td>
-                                  </tr>
-                                ))}
+                                  </tr>,
+                                  isMulti && tasksForSession === s.id && (
+                                    <tr key={`${s.id}-tasks`} className="sessions-row">
+                                      <td colSpan={11}>
+                                        <TaskReport
+                                          tasks={taskRows}
+                                          merged={s.forensicsResults?.merged}
+                                          taskCount={sessionTaskCount}
+                                          selectedTaskId={
+                                            replaySessionId === s.id ? replayTaskId : null
+                                          }
+                                          onReplayTask={(taskId) => {
+                                            setReplayTaskId(taskId);
+                                            setReplaySessionId(s.id);
+                                          }}
+                                        />
+                                      </td>
+                                    </tr>
+                                  ),
+                                  ];
+                                })}
                               </tbody>
                             </table>
                           )}
@@ -427,9 +516,17 @@ export default function ClassPage() {
           <div className="section">
             <h2>
               Session replay{" "}
-              <button className="link-btn" onClick={() => setReplaySessionId(null)}>× close</button>
+              <button
+                className="link-btn"
+                onClick={() => {
+                  setReplaySessionId(null);
+                  setReplayTaskId(null);
+                }}
+              >
+                × close
+              </button>
             </h2>
-            <DvrPlayer sessionId={replaySessionId} />
+            <DvrPlayer sessionId={replaySessionId} initialTaskId={replayTaskId} />
           </div>
         )}
       </div>

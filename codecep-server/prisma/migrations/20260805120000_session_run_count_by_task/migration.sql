@@ -1,0 +1,13 @@
+-- Multi-task exams (Prompt 2) — per-task run counts.
+--
+-- Metric A is a compile count, and on a multi-task exam each task is its own
+-- program, so the single session-level "runCount" column could never say which
+-- question the student iterated on. That column stays exactly as it is (the
+-- session total); this one records the breakdown: { "task1": 3, "task2": 1 }.
+--
+-- NULLABLE with NO DEFAULT on purpose, mirroring sessions.tier1_log: NULL means
+-- "this session predates per-task run tracking", which the report distinguishes
+-- from a recorded {} ("tracked, nothing run yet"). A '{}' backfill would make
+-- every historical session claim its tasks were each run zero times — a claim
+-- the data cannot support.
+ALTER TABLE "sessions" ADD COLUMN IF NOT EXISTS "runCountByTask" JSONB;

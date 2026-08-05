@@ -163,6 +163,107 @@ function snapshotFiles(snapshot, multiTask = false) {
   return { [DEFAULT_FILE]: snapshot?.codeSnapshot ?? "" };
 }
 
+/**
+ * Every task this replay payload contains, in exam order (Prompt 2).
+ *
+ * Reads both the events and the per-flush task snapshots, so a task the student
+ * opened and typed nothing in still appears rather than silently vanishing from
+ * the selector.
+ */
+export function taskIdsInReplay(data) {
+  const ids = new Set();
+  for (const ev of data?.events ?? []) ids.add(taskIdOf(ev));
+  for (const snap of data?.snapshots ?? []) {
+    const perTask = snap?.taskSnapshots;
+    if (perTask && typeof perTask === "object") for (const id of Object.keys(perTask)) ids.add(id);
+  }
+  if (ids.size === 0) ids.add(DEFAULT_TASK);
+  return [...ids].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+/**
+ * The replay payload narrowed to ONE task (Prompt 2).
+ *
+ * Returns the SAME shape `buildReplay` already takes, so per-task replay is the
+ * existing engine run over a smaller payload — no second reconstruction
+ * strategy to keep in step, and the exactness check still verifies against this
+ * task's own recorded snapshots.
+ *
+ * Two details are load-bearing:
+ *
+ *  • Each window's `eventCount` is recomputed from the events that survived the
+ *    filter. The engine partitions the flattened event list back into flush
+ *    windows with those counts, so a stale count would slice the wrong events
+ *    into the wrong window and every snapshot check would fail.
+ *
+ *  • `timeSinceLastKeystrokeMs` is re-derived across a gap left by another
+ *    task's events. Time the student spent answering Task 2 IS idle time in
+ *    Task 1's timeline, and skip-idle has to see it as such. Events with no
+ *    dropped event before them are passed through untouched, so the recorded
+ *    measurement is preserved wherever it is still the right one.
+ */
+export function replayDataForTask(data, taskId) {
+  if (!taskId) return data;
+  const snapshots = data?.snapshots ?? [];
+  const events = data?.events ?? [];
+
+  const outSnapshots = [];
+  const outEvents = [];
+  let cursor = 0;
+  let lastKeptTs = null;
+  let droppedSinceKept = false;
+
+  for (let w = 0; w < snapshots.length; w++) {
+    const snap = snapshots[w];
+    const count = snap?.eventCount ?? events.length - cursor;
+    const windowEvents = events.slice(cursor, cursor + count);
+    cursor += count;
+
+    let kept = 0;
+    for (const ev of windowEvents) {
+      if (taskIdOf(ev) !== taskId) {
+        droppedSinceKept = true;
+        continue;
+      }
+      outEvents.push(
+        droppedSinceKept && lastKeptTs !== null
+          ? { ...ev, timeSinceLastKeystrokeMs: Math.max(0, ev.timestamp - lastKeptTs) }
+          : ev,
+      );
+      lastKeptTs = ev.timestamp;
+      droppedSinceKept = false;
+      kept++;
+    }
+
+    // Narrow the snapshot to this task's workspace. File identity then comes
+    // back UNQUALIFIED (one task = not a multi-task payload), which is exactly
+    // what a single-task view should show.
+    const perTask = snap?.taskSnapshots;
+    const taskFiles =
+      perTask && typeof perTask === "object" ? (perTask[taskId] ?? null) : null;
+
+    outSnapshots.push({
+      ...snap,
+      eventCount: kept,
+      ...(taskFiles
+        ? {
+            taskSnapshots: { [taskId]: taskFiles },
+            fileSnapshots: taskFiles,
+            // Keeps the pre-v2 interpolation path anchored on THIS task's entry
+            // file if it is ever reached (the stored codeSnapshot is whichever
+            // task happened to be active at that flush).
+            codeSnapshot:
+              taskFiles[DEFAULT_FILE] ?? Object.values(taskFiles)[0] ?? snap?.codeSnapshot ?? "",
+          }
+        : // No per-task record at all: a single-task or pre-multi-task session,
+          // which is already exactly this task's data. Left untouched.
+          {}),
+    });
+  }
+
+  return { ...data, snapshots: outSnapshots, events: outEvents };
+}
+
 export function buildReplay(data, opts = {}) {
   const snapshots = data?.snapshots ?? [];
   const events = data?.events ?? [];

@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { buildReplay, diffTexts, FALLBACK_LEAD_IN_MS } from "./replayEngine";
+import {
+  buildReplay,
+  diffTexts,
+  FALLBACK_LEAD_IN_MS,
+  replayDataForTask,
+  taskIdsInReplay,
+} from "./replayEngine";
 
 // Helper: build a flush-window snapshot entry.
 const snap = (flushedAt: number, codeSnapshot: string, eventCount: number) => ({
@@ -504,5 +510,87 @@ describe("buildReplay — multi-task sessions", () => {
     expect(r.files).toEqual(["main.cpp"]);
     expect(r.exact).toBe(true);
     expect(r.stateAt(r.totalDurationMs)).toEqual({ fileName: "main.cpp", text: "int a;" });
+  });
+});
+
+// ── Per-task replay selection (Prompt 2) ────────────────────────────────────
+// The instructor picks WHICH task to watch. Narrowing the payload and re-using
+// the same engine is what keeps per-task replay exact: the reconstruction is
+// still verified against that task's own recorded snapshots.
+describe("replayDataForTask", () => {
+  const tsnap = (
+    flushedAt: number,
+    taskSnapshots: Record<string, Record<string, string>>,
+    eventCount: number,
+  ) => ({ flushedAt, codeSnapshot: "", fileSnapshots: null, taskSnapshots, eventCount });
+
+  function typeInto(task: string, file: string, text: string, startTs: number) {
+    return [...text].map((ch, i) => xev(startTs + i * 100, file, i, 0, ch, { taskId: task }));
+  }
+
+  const t1 = typeInto("task1", "main.cpp", "int a;", 1000);
+  const t2 = typeInto("task2", "main.cpp", "double b;", 60000);
+  const session = {
+    snapshots: [
+      tsnap(
+        90000,
+        { task1: { "main.cpp": "int a;" }, task2: { "main.cpp": "double b;" } },
+        t1.length + t2.length,
+      ),
+    ],
+    events: [...t1, ...t2],
+    openedAt: 0,
+  };
+
+  it("lists every task present, in exam order", () => {
+    expect(taskIdsInReplay(session)).toEqual(["task1", "task2"]);
+    expect(taskIdsInReplay({ snapshots: [], events: [] })).toEqual(["task1"]);
+  });
+
+  it("replays ONE task exactly, with the other task's edits absent", () => {
+    const only2 = buildReplay(replayDataForTask(session, "task2"), { initialText: "" });
+    expect(only2.exact).toBe(true);
+    // Unqualified: a one-task view is not a multi-task payload.
+    expect(only2.files).toEqual(["main.cpp"]);
+    expect(only2.eventCount).toBe(t2.length);
+    expect(only2.stateAt(only2.totalDurationMs)).toEqual({
+      fileName: "main.cpp",
+      text: "double b;",
+    });
+
+    const only1 = buildReplay(replayDataForTask(session, "task1"), { initialText: "" });
+    expect(only1.exact).toBe(true);
+    expect(only1.finalText).toBe("int a;");
+  });
+
+  it("recomputes each window's eventCount so windows still partition correctly", () => {
+    const narrowed = replayDataForTask(session, "task1");
+    expect(narrowed.snapshots[0].eventCount).toBe(t1.length);
+    expect(narrowed.events).toHaveLength(t1.length);
+    expect(narrowed.snapshots[0].taskSnapshots).toEqual({ task1: { "main.cpp": "int a;" } });
+  });
+
+  it("counts time spent in another task as idle time in this task's timeline", () => {
+    // Task 1's last keystroke is at 1500; Task 2 starts at 60000. Viewed as
+    // Task 2 alone, that minute is real dead time and skip-idle must see it.
+    const only2 = buildReplay(replayDataForTask(session, "task2"), { initialText: "" });
+    expect(only2.events?.length ?? only2.eventCount).toBe(t2.length);
+    expect(only2.gaps.some((g) => g.durationMs >= 55000)).toBe(true);
+  });
+
+  it("leaves a session with no per-task record untouched", () => {
+    const legacy = {
+      snapshots: [xsnap(9000, { "main.cpp": "int a;" }, 6)],
+      events: typeOut("main.cpp", "int a;", 1000),
+      openedAt: 0,
+    };
+    const narrowed = replayDataForTask(legacy, "task1");
+    expect(narrowed.events).toEqual(legacy.events);
+    expect(narrowed.snapshots[0].codeSnapshot).toBe(legacy.snapshots[0].codeSnapshot);
+    expect(buildReplay(narrowed, { initialText: "" }).finalText).toBe("int a;");
+  });
+
+  it("returns the payload unchanged when no task is selected (all-tasks view)", () => {
+    expect(replayDataForTask(session, null)).toBe(session);
   });
 });

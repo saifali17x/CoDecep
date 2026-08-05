@@ -183,6 +183,112 @@ export function burstHistoryForTask(
   return out
 }
 
+// ── Per-task run counts (Prompt 2 — closes gap #29) ────────────────────────
+// Metric A is a COMPILE count. `sessions.runCount` is a single scalar, so on a
+// multi-task exam it could only ever be reported at session scope — a student
+// who compiled Task 1 six times and pasted Task 3 without ever running it read
+// as six runs everywhere. `sessions.runCountByTask` records the breakdown, and
+// this selector is what every reader goes through so the fallbacks live in one
+// place.
+export type RunCountScope = 'task' | 'session'
+
+export function runCountForTask(
+  runCountByTask: unknown,
+  taskId: string,
+  sessionRunCount: number,
+  taskCount: number,
+): { runCount: number; scope: RunCountScope } {
+  const map =
+    runCountByTask && typeof runCountByTask === 'object' && !Array.isArray(runCountByTask)
+      ? (runCountByTask as Record<string, unknown>)
+      : null
+
+  // Tracked: the number is this task's own, whatever it is. A key that is
+  // absent from a recorded map means that task genuinely was never run.
+  if (map) {
+    const raw = map[taskId]
+    const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0
+    return { runCount: Math.max(0, Math.trunc(value)), scope: 'task' }
+  }
+
+  // No per-task record. On a SINGLE-task session the session total is that
+  // task's count by definition, so it is reported at task scope honestly.
+  if (taskCount <= 1) return { runCount: sessionRunCount, scope: 'task' }
+
+  // A multi-task session recorded before per-task tracking existed: the total
+  // is all we have, and it is labelled 'session' rather than repeated per task
+  // as though it had been measured there.
+  return { runCount: sessionRunCount, scope: 'session' }
+}
+
+// ── Merged cross-task review signal (Prompt 2 — closes gap #31) ────────────
+// The session-level metrics are computed over ALL events, so on a multi-task
+// exam they are an AVERAGE: a fully-pasted task sitting beside two hand-typed
+// ones can pull the session's typedRatio back over the threshold and the whole
+// session reads "no flag". The review signal must therefore be ANY-task-flagged,
+// never an average — one flagged task makes the session worth a look.
+//
+// Like every other metric here this is a probabilistic signal for a human
+// instructor (Constraint 7): "flagged for review", never a verdict.
+export const FLAGGABLE_METRICS = ['metricA', 'metricB', 'metricC', 'authorship', 'astAudit'] as const
+export type FlaggableMetric = (typeof FLAGGABLE_METRICS)[number]
+
+/** Which of a result bundle's metrics carry `flag: true`. */
+export function flaggedMetricsOf(bundle: unknown): FlaggableMetric[] {
+  if (!bundle || typeof bundle !== 'object') return []
+  const b = bundle as Record<string, { flag?: unknown } | undefined>
+  return FLAGGABLE_METRICS.filter((key) => b[key]?.flag === true)
+}
+
+export type MergedReview = {
+  /** ANY task (or the session-wide sweep) flagged. Never an average. */
+  flag: boolean
+  basis: 'any-task-flagged'
+  taskCount: number
+  flaggedTaskCount: number
+  flaggedTasks: { taskId: string; label: string; metrics: FlaggableMetric[] }[]
+  /** Metrics flagged by the session-wide computation itself. */
+  sessionFlaggedMetrics: FlaggableMetric[]
+  reason: string | null
+}
+
+export function computeMergedReview(
+  tasks: Record<string, unknown>,
+  sessionLevel: unknown,
+  taskCount: number,
+): MergedReview {
+  const flaggedTasks = Object.entries(tasks)
+    .map(([taskId, bundle]) => ({
+      taskId,
+      label:
+        (bundle as { label?: unknown })?.label && typeof (bundle as { label?: unknown }).label === 'string'
+          ? ((bundle as { label: string }).label)
+          : taskLabel(taskId),
+      metrics: flaggedMetricsOf(bundle),
+    }))
+    .filter((t) => t.metrics.length > 0)
+    .sort((a, b) => compareTaskIds(a.taskId, b.taskId))
+
+  const sessionFlaggedMetrics = flaggedMetricsOf(sessionLevel)
+  const flag = flaggedTasks.length > 0 || sessionFlaggedMetrics.length > 0
+
+  return {
+    flag,
+    basis: 'any-task-flagged',
+    taskCount,
+    flaggedTaskCount: flaggedTasks.length,
+    flaggedTasks,
+    sessionFlaggedMetrics,
+    reason: flag
+      ? flaggedTasks.length > 0
+        ? `${flaggedTasks.length} of ${taskCount} task(s) flagged for instructor review (${flaggedTasks
+            .map((t) => `${t.label}: ${t.metrics.join(', ')}`)
+            .join('; ')})`
+        : `Session-wide signals flagged for instructor review (${sessionFlaggedMetrics.join(', ')})`
+      : null,
+  }
+}
+
 // ── Which files count as CODE ──────────────────────────────────────────────
 // Authorship is a statement about the submitted PROGRAM, so data files are
 // excluded: a student legitimately pasting a CSV of test data into data.txt is

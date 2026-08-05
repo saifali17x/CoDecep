@@ -1,0 +1,104 @@
+/* Per-task forensic report (Prompt 2). Tokenized against theme.css.
+   The component is rendered inside BOTH the DVR panel and the ClassPage
+   session table, so it carries its own primitives (.link-btn, .sev-cell)
+   rather than depending on whichever page happens to have imported
+   portal.css. */
+
+.task-report {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: var(--sp-3);
+  margin: var(--sp-3) 0;
+}
+
+.task-report-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+
+.task-report-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.merged-pill {
+  display: inline-block;
+  padding: 2px var(--sp-3);
+  border: 1px solid currentColor;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.task-report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+
+.task-report-table th {
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.task-report-table td {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-2);
+  vertical-align: middle;
+}
+
+.task-report-table tr:last-child td { border-bottom: none; }
+
+/* A flagged task is emphasized but never shouted at — the left rule plus the
+   text label carry the meaning, color alone never does. */
+.task-report-table tr.flagged td { background: rgba(248, 81, 73, 0.06); }
+.task-report-table tr.flagged td:first-child { box-shadow: inset 2px 0 0 var(--danger); }
+.task-report-table tr.selected td { background: rgba(56, 139, 253, 0.1); }
+
+.task-name { font-weight: 600; color: var(--text); }
+
+.task-flag-note {
+  display: inline-block;
+  margin-left: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  white-space: nowrap;
+}
+
+.task-report .sev-cell {
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.task-report .link-btn {
+  background: none;
+  border: none;
+  color: var(--link);
+  cursor: pointer;
+  padding: 0;
+  font-size: var(--fs-sm);
+  font-family: inherit;
+}
+.task-report .link-btn:hover { text-decoration: underline; }
+
+.task-report-note {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
