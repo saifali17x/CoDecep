@@ -49,8 +49,15 @@ import {
   computeMergedReview,
   type AuthorshipResult,
 } from './forensics/metrics'
-import { signToken, requireAuth, requireRole } from './auth'
+import { signToken, requireAuth, requireRole, verifyToken } from './auth'
 import { parseSyllabusToAllowlist } from './gemini'
+import { WatchRegistry } from './live/watchRegistry'
+import {
+  registerLiveHandlers,
+  announceFlush,
+  announceSessionEnd,
+  type LiveSocket,
+} from './live/liveRelay'
 import {
   validate,
   registerSchema,
@@ -76,6 +83,14 @@ const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1'
 function debugLog(...args: unknown[]) {
   if (DEBUG) console.log(...args)
 }
+
+// ── Live DVR watch registry (Session 28) ──────────────────────────────────
+// Which instructors are watching which sessions right now. In-memory and
+// process-local ON PURPOSE: it describes live socket connections, which do not
+// outlive the process either, so persisting it would only create state that can
+// disagree with reality. Nothing durable depends on it — if the server
+// restarts, every DVR reconnects and re-registers.
+const watchRegistry = new WatchRegistry()
 
 // ── DB retry helper (Neon serverless drops idle connections) ──────────────
 // Retries Prisma calls on connection-level errors only, with light backoff.
@@ -445,6 +460,13 @@ app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: R
 
   debugLog(`[INGEST] session=${sessionId} +${events.length} events appended`)
   res.status(202).json({ accepted: events.length })
+
+  // Live DVR (Session 28): nudge anyone watching to re-read the durable record
+  // and reconcile it against their live tail. AFTER the response and only when
+  // someone is actually watching, so the ingest path stays the O(1) append
+  // Constraint 2 requires — this is a room emit on an in-memory registry, and
+  // on the overwhelmingly common unwatched session it is a single Map lookup.
+  announceFlush(io, watchRegistry, sessionId)
 })
 
 // ── POST /api/session/:id/submit ──────────────────────────────────────────
@@ -460,6 +482,12 @@ app.post('/api/session/:id/submit', async (req: Request, res: Response) => {
     await telemetryQueue.add('forensics', { sessionId: session.id })
     console.log(`[SUBMIT] Session ${session.id} → SUBMITTED, forensics job enqueued`)
     res.status(200).json({ status: 'SUBMITTED' })
+    // Live DVR (Session 28): an instructor watching this student is now waiting
+    // on keystrokes that will never arrive, because the Immune Phase disarmed
+    // streaming client-side the moment Submit was pressed. Telling them
+    // explicitly is what turns that into a clean transition to the final
+    // recorded session instead of a live view that silently stops moving.
+    announceSessionEnd(io, watchRegistry, session.id)
   } catch (err) {
     // P2025 = no IN_PROGRESS row matched — the true idempotency case.
     if ((err as { code?: string } | null)?.code === 'P2025') {
@@ -1726,6 +1754,24 @@ function summariseTier1(tier1Log: unknown, playbackLog: unknown) {
   return { tabOut: null, illegalPaste: pasteAlerts, astViolation: null, recorded: false }
 }
 
+// ── Live DVR: who may watch whom (Session 28) ─────────────────────────────
+// Deliberately the SAME rule as GET /api/session/:id/replay — an instructor may
+// watch a session whose assignment→class they own, and a legacy session with no
+// assignment is dev data where the instructor role suffices. Duplicating the
+// rule would be one more place for the two to drift apart, so the shape of the
+// query is copied verbatim and only the verdict differs.
+async function canWatchSession(sessionId: string, userId: string): Promise<boolean> {
+  const session = await withRetry(() =>
+    prisma.session.findUnique({
+      where: { id: sessionId },
+      include: { assignment: { include: { class: true } } },
+    })
+  )
+  if (!session) return false
+  if (session.assignment) return session.assignment.class.instructorId === userId
+  return true
+}
+
 io.on('connection', (socket) => {
   socket.on('join_instructor', () => {
     socket.join('instructors')
@@ -1739,6 +1785,16 @@ io.on('connection', (socket) => {
     // summarise Tier-1 violations instead of them existing only in the live
     // feed. Fire-and-forget: relay latency must not depend on the DB.
     void recordTier1Alert(payload)
+  })
+
+  // Live keystroke streaming (Session 28). Everything about the protocol lives
+  // in live/liveRelay.ts so it can be driven by mock sockets in tests; nothing
+  // it receives is persisted (see that file's header for why).
+  registerLiveHandlers(io, socket as unknown as LiveSocket, {
+    registry: watchRegistry,
+    verifyToken,
+    canWatch: canWatchSession,
+    log: debugLog,
   })
 })
 

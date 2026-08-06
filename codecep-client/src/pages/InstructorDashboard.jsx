@@ -42,7 +42,11 @@ export default function InstructorDashboard() {
   const [live, setLive] = useState({});
   const [alerts, setAlerts] = useState([]); // raw chronological log
   const [connected, setConnected] = useState(socket.connected);
-  const [dvrSessionId, setDvrSessionId] = useState(null);
+  // Session 28 — a tile click opens the DVR in LIVE mode, which is what makes
+  // the grid a monitoring tool rather than a post-mortem index: the instructor
+  // watches the code being typed instead of reading it 30 seconds later. Held
+  // together as one object so the session and its mode can never disagree.
+  const [dvr, setDvr] = useState(null); // { sessionId, live }
   const [, setTick] = useState(0); // 1s ticker so cool-down transitions render
 
   // The socket handler must know the current roster without re-subscribing.
@@ -92,7 +96,7 @@ export default function InstructorDashboard() {
 
   useEffect(() => {
     setLive({});
-    setDvrSessionId(null);
+    setDvr(null);
     loadRoster();
   }, [loadRoster]);
 
@@ -197,7 +201,7 @@ export default function InstructorDashboard() {
         ) : roster && roster.length === 0 ? (
           <p className="empty-note">No students in this class yet.</p>
         ) : roster ? (
-          <div className={`monitor-main ${dvrSessionId ? "with-dvr" : ""}`}>
+          <div className={`monitor-main ${dvr ? "with-dvr" : ""}`}>
             <div className="tile-grid">
               {tiles.map((t) => (
                 <button
@@ -210,10 +214,15 @@ export default function InstructorDashboard() {
                   disabled={!t.sessionId}
                   title={
                     t.sessionId
-                      ? `Open ${t.username}'s DVR replay`
+                      ? t.status === "IN_PROGRESS"
+                        ? `Watch ${t.username} live — see their code being typed`
+                        : `Open ${t.username}'s DVR replay`
                       : `${t.username} has not started`
                   }
-                  onClick={() => t.sessionId && setDvrSessionId(t.sessionId)}
+                  onClick={() =>
+                    t.sessionId &&
+                    setDvr({ sessionId: t.sessionId, live: t.status === "IN_PROGRESS" })
+                  }
                 >
                   <span className="tile-top">
                     <span className={`status-dot ${t.status.toLowerCase()}`} />
@@ -233,13 +242,16 @@ export default function InstructorDashboard() {
               ))}
             </div>
 
-            {dvrSessionId && (
+            {dvr && (
               <div className="monitor-dvr">
                 <div className="monitor-dvr-head">
-                  <span>Session replay</span>
-                  <button className="link-btn" onClick={() => setDvrSessionId(null)}>× close</button>
+                  <span>{dvr.live ? "Live session" : "Session replay"}</span>
+                  {/* Closing is what stops the student streaming: the DVR's own
+                      cleanup emits watch:stop, and the server tells the student
+                      to stop once no watchers remain. */}
+                  <button className="link-btn" onClick={() => setDvr(null)}>× close</button>
                 </div>
-                <DvrPlayer sessionId={dvrSessionId} />
+                <DvrPlayer key={dvr.sessionId} sessionId={dvr.sessionId} live={dvr.live} />
               </div>
             )}
           </div>
@@ -268,7 +280,7 @@ export default function InstructorDashboard() {
                       {a.sessionId ? (
                         <button
                           className="session-link"
-                          onClick={() => setDvrSessionId(a.sessionId)}
+                          onClick={() => setDvr({ sessionId: a.sessionId, live: true })}
                         >
                           {a.sessionId.slice(0, 8)}…
                         </button>

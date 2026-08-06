@@ -140,6 +140,13 @@ const fileOf = (ev, multiTask = false) =>
 // the only complete one — `fileSnapshots` holds just the active task's files —
 // so it is preferred, and its names are qualified to match the events'.
 function snapshotFiles(snapshot, multiTask = false) {
+  // ── Live DVR (Session 28) ────────────────────────────────────────────────
+  // An OPEN window is the live edge: keystroke events streamed over the socket
+  // that have not been flushed yet, so there is no recorded snapshot to read
+  // and none is expected. Callers must treat this as "nothing to check
+  // against" — NOT as an empty workspace, which would make every live file
+  // look like it had just been emptied.
+  if (snapshot?.open) return null;
   // The per-task record is the most complete one whenever it exists — on a
   // multi-task session `fileSnapshots` holds only the ACTIVE task's files — so
   // it wins. On a single-task session qualification is a no-op, so the names
@@ -488,6 +495,10 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
   // checkpoints[w][file] = that file's text at the END of window w.
   const checkpoints = [];
   const inexactWindows = new Set();
+  // Live DVR (Session 28): windows fed by the socket stream rather than a
+  // flush. Tracked separately from `inexactWindows` because "not yet flushed"
+  // and "did not match what was flushed" are completely different claims.
+  const openWindows = new Set();
   const current = new Map();
   for (const f of files) {
     // The entry file may have started non-empty (the /legacy template); every
@@ -504,7 +515,17 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
       idx++;
     }
     const recorded = snapshotFiles(snapshots[w], multiTask);
-    if (recorded === null) {
+    if (snapshots[w]?.open) {
+      // The LIVE EDGE. These events arrived over the socket and have not been
+      // flushed, so no snapshot exists to check them against — and that absence
+      // is expected, not a discrepancy. Counting it as inexact would label
+      // every live session "approximate" for the one reason that says nothing
+      // about fidelity: these are the same exact edits the recorded path
+      // replays, applied on top of a checkpoint that WAS verified. Reported
+      // separately as `liveEventCount` so the player can be specific about
+      // which part of the timeline is not yet durable.
+      openWindows.add(w);
+    } else if (recorded === null) {
       // A multi-task window with no per-task snapshot cannot be checked against
       // anything. Silence would amount to claiming exactness we did not verify,
       // so the window counts as inexact and the player says so.
@@ -631,6 +652,12 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
     files,
     exact: inexactWindows.size === 0,
     inexactWindowCount: inexactWindows.size,
+    // How much of this timeline is the un-flushed live edge (Session 28). Zero
+    // for every recorded session, so nothing existing reads differently.
+    liveEventCount: [...openWindows].reduce(
+      (n, w) => n + (snapshots[w].eventCount ?? 0),
+      0,
+    ),
     finalText,
     finalFiles,
     textAt: (relMs) => stateAt(relMs).text,

@@ -7,6 +7,7 @@ import PdfPane from "./components/PdfPane";
 import FilePanel from "./components/FilePanel";
 import socket from "./socket";
 import { debugLog } from "./debug";
+import * as liveStream from "./lib/liveStream";
 import {
   ENTRY_FILE,
   createWorkspace,
@@ -265,6 +266,19 @@ function App({
       );
   }, []);
 
+  // ── Live DVR: join this session's room (Session 28) ───────────────────────
+  // Joining is not streaming. The student sits in the room for the whole exam
+  // and emits nothing until an instructor actually opens them, at which point
+  // the server sends `live:start` and this module drains the buffer to close
+  // the seam before the first live keystroke goes out (see lib/liveStream.js).
+  // A session that mounts already SUBMITTED never attaches at all.
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    if (sessionStatusRef.current === "SUBMITTED") return undefined;
+    liveStream.attach(sessionId, () => flushNowRef.current?.());
+    return () => liveStream.stop();
+  }, [sessionId]);
+
   // ── Draggable divider ─────────────────────────────────────────────────────
   const handleDividerMove = useCallback((clientX) => {
     const el = workspaceRef.current;
@@ -337,7 +351,12 @@ function App({
       console.warn("[SUBMIT] final flush threw — submitting anyway:", err?.message ?? err);
     }
 
-    // 2. DISARM — the Immune Phase, exactly as before.
+    // 2. DISARM — the Immune Phase, exactly as before. Live streaming disarms
+    //    here alongside the heartbeat and the visibility listeners: an
+    //    instructor watching sees the stream end, and the server's submit route
+    //    tells them so explicitly so their DVR settles onto the final recorded
+    //    session rather than a live view that quietly stops moving.
+    liveStream.stop();
     setSessionStatus("SUBMITTED");
     sessionStatusRef.current = "SUBMITTED";
     setSubmitOutcome("SUBMITTED"); // optimistic; refined by the server response
@@ -423,6 +442,10 @@ function App({
       // console (that leakage was the old terminal's problem).
       if (res.status === 202) {
         debugLog(`[FLUSH] ${data.accepted} event(s) accepted — 202`);
+        // A watching instructor can now re-read the durable record and retire
+        // the matching events from their live tail (Session 28). No-op when
+        // nobody is watching.
+        liveStream.notifyFlushed();
         return true;
       }
       debugLog(`[FLUSH] server rejected payload — HTTP ${res.status}`);

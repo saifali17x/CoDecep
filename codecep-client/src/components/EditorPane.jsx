@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import socket from "../socket";
 import { debugLog } from "../debug";
+import { emitKeystroke } from "../lib/liveStream";
 import { badgeOf, kindOf } from "../lib/workspace";
 import "./EditorPane.css";
 
@@ -385,6 +386,26 @@ export default function EditorPane({
         socket.emit("alert", payload);
       }, 0);
     }
+
+    // ── Live stream (Session 28) ────────────────────────────────────────────
+    // The SAME event, also sent over the socket, so an instructor watching this
+    // student sees it now instead of up to 30 seconds from now. Additive and
+    // best-effort: the event above is already buffered and will flush exactly
+    // as it always did, whatever happens here.
+    //
+    // Deferred one tick on purpose. Both paths that can reclassify this event
+    // as a paste run before a timer scheduled here does — `attributePaste` from
+    // Monaco's synchronous `onDidPaste`, and the bulk-insert promotion queued
+    // just above (FIFO, so it is already ahead of us). Emitting inside
+    // handleChange would stream a pasted block labelled "type", and watching a
+    // paste arrive AS a paste is the entire investigative value of live view.
+    //
+    // A copy, not the event itself: the buffered object is still mutable until
+    // it flushes, and the wire copy must be what was true at this moment.
+    setTimeout(() => {
+      if (isSubmittedRef.current) return; // Immune Phase
+      emitKeystroke({ ...event });
+    }, 0);
 
     // Tier 1 alert — AST_VIOLATION (debounced 1.5s, de-duplicated, Immune Phase guarded).
     // Only C++ buffers are parsed: running the tree-sitter C++ grammar over a

@@ -1,8 +1,11 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
+import socket from "../socket";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
+import { debugLog } from "../debug";
 import { buildReplay, replayDataForTask, taskIdsInReplay } from "../lib/replayEngine";
+import { stitchLive, recordedThrough } from "../lib/liveStitch";
 import { languageOf, taskLabel } from "../lib/workspace";
 import TaskReport, { MergedFlagPill } from "./TaskReport";
 import {
@@ -167,7 +170,34 @@ function fmtClock(ms) {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export default function DvrPlayer({ sessionId, initialTaskId = null }) {
+function fmtWallClock(ts) {
+  return new Date(ts).toLocaleTimeString("en-US", { hour12: false });
+}
+
+// ── Live mode status (Session 28) ────────────────────────────────────────────
+// Every state says what the instructor is actually looking at. "Lost" and
+// "syncing" in particular must never look like a working live view: showing a
+// stale edge as if it were the present is the failure this whole feature exists
+// to remove, and reintroducing it in the error path would be worse than not
+// having it at all.
+const LIVE_STATUS = {
+  connecting: { dot: "◐", text: "connecting to live stream…", tone: "pending" },
+  syncing: {
+    dot: "◐",
+    text: "syncing — waiting for the student's buffered keystrokes",
+    tone: "pending",
+  },
+  following: { dot: "●", text: "LIVE", tone: "live" },
+  ended: { dot: "■", text: "session submitted — showing the final recorded session", tone: "done" },
+  lost: {
+    dot: "○",
+    text: "live connection lost — showing recorded data up to the last flush",
+    tone: "error",
+  },
+  denied: { dot: "○", text: "live stream unavailable", tone: "error" },
+};
+
+export default function DvrPlayer({ sessionId, initialTaskId = null, live = false }) {
   const { token } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -177,6 +207,22 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(5);
   const [skipIdle, setSkipIdle] = useState(true);
+
+  // ── Live mode state ───────────────────────────────────────────────────────
+  // `following` is what makes this a ghost-typer rather than a player: while it
+  // is on, the view IS the present edge and moves as the student types. Any
+  // scrub turns it off (the instructor has deliberately gone into the past) and
+  // "Jump to live" turns it back on. Live events keep arriving and keep
+  // extending the timeline either way — rewinding pauses the VIEW, never the
+  // stream.
+  const [following, setFollowing] = useState(live);
+  const [liveEvents, setLiveEvents] = useState([]);
+  // The instant the student confirmed their pre-watch buffer was drained.
+  // Nothing live is applied before it — see lib/liveStitch.js for why a naive
+  // stream would garble the document rather than merely leave a gap.
+  const [syncedAt, setSyncedAt] = useState(null);
+  const [liveStatus, setLiveStatus] = useState(live ? "connecting" : null);
+  const [liveError, setLiveError] = useState(null);
   // Prompt 2 — WHICH task is being replayed. null = the whole session as one
   // timeline (the Prompt 1 behavior, and the only view a single-task session
   // ever shows).
@@ -210,6 +256,95 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
     };
   }, [sessionId, token]);
 
+  // A SILENT refetch of the durable record, used whenever a flush lands during
+  // a live watch. Deliberately does not touch `t`, `playing` or `following`:
+  // the record growing underneath the instructor is bookkeeping, not a reason
+  // to yank their playhead. Events retired into the record are then dropped
+  // from the live tail by de-dup, so the seam closes without a visible seam.
+  const reload = useCallback(() => {
+    if (!sessionId) return;
+    apiFetch(`/api/session/${sessionId}/replay`, { token })
+      .then(setData)
+      .catch((err) => debugLog("[LIVE] reconcile refetch failed:", err.message));
+  }, [sessionId, token]);
+
+  // ── Live subscription ─────────────────────────────────────────────────────
+  // Only for a session that is actually still running: a SUBMITTED session has
+  // nothing left to stream, and asking to watch one would leave a student's
+  // room armed for no reason.
+  const liveMode = live && data?.status === "IN_PROGRESS";
+
+  useEffect(() => {
+    if (!liveMode || !sessionId || !token) return undefined;
+
+    const startWatching = () => {
+      setLiveStatus("connecting");
+      setLiveError(null);
+      socket.emit("watch:start", { sessionId, token }, (res) => {
+        if (res?.ok) {
+          // Watching is granted, but the edge is NOT live yet — the student
+          // still has to drain whatever they typed since the last flush.
+          setLiveStatus((s) => (s === "ended" ? s : "syncing"));
+        } else {
+          setLiveStatus("denied");
+          setLiveError(res?.error ?? "Could not start the live stream.");
+        }
+      });
+    };
+
+    const onSynced = (p) => {
+      if (p?.sessionId !== sessionId) return;
+      // The student's buffer is now in the database, so refetch to pick it up.
+      // Only after this does anything live get applied.
+      setSyncedAt(p.at);
+      setLiveStatus((s) => (s === "ended" ? s : "following"));
+      reload();
+    };
+    const onKeystroke = (p) => {
+      if (p?.sessionId !== sessionId || !p?.event) return;
+      setLiveEvents((prev) => [...prev, p.event]);
+    };
+    const onFlushed = (p) => {
+      if (p?.sessionId !== sessionId) return;
+      reload();
+    };
+    const onEnd = (p) => {
+      if (p?.sessionId !== sessionId) return;
+      // The student submitted. The Immune Phase already stopped their stream;
+      // this is what turns that silence into an explicit, clean transition to
+      // the final recorded session instead of an edge that just stops moving.
+      setLiveStatus("ended");
+      reload();
+    };
+    const onDisconnect = () => setLiveStatus("lost");
+    const onReconnect = () => {
+      // The room membership died with the socket, and the student re-syncs from
+      // scratch. Drop the stale tail rather than risk applying it across
+      // whatever was missed while disconnected.
+      setSyncedAt(null);
+      setLiveEvents([]);
+      startWatching();
+    };
+
+    socket.on("live:synced", onSynced);
+    socket.on("live:keystroke", onKeystroke);
+    socket.on("live:flushed", onFlushed);
+    socket.on("live:end", onEnd);
+    socket.on("disconnect", onDisconnect);
+    socket.on("connect", onReconnect);
+    startWatching();
+
+    return () => {
+      socket.emit("watch:stop", { sessionId });
+      socket.off("live:synced", onSynced);
+      socket.off("live:keystroke", onKeystroke);
+      socket.off("live:flushed", onFlushed);
+      socket.off("live:end", onEnd);
+      socket.off("disconnect", onDisconnect);
+      socket.off("connect", onReconnect);
+    };
+  }, [liveMode, sessionId, token, reload]);
+
   // A caller can open the player straight on one task ("Replay this task" in a
   // per-task report). Adjusting state during render (React's documented
   // reset-on-prop-change pattern) rather than in an effect: the selection is
@@ -223,6 +358,15 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
     setSelectedTask(initialTaskId ?? null);
     setT(0);
     setPlaying(false);
+    // A different student is a different live stream: the tail and its sync
+    // point belong to the session that produced them and must not survive the
+    // switch, or the first frames of the new session would be reconstructed
+    // over the previous one's events.
+    setLiveEvents([]);
+    setSyncedAt(null);
+    setFollowing(live);
+    setLiveStatus(live ? "connecting" : null);
+    setLiveError(null);
   }
 
   // Session 22 (part 2): replay is anchored at an EMPTY document, matching the
@@ -236,19 +380,47 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
   const taskIds = useMemo(() => (data ? taskIdsInReplay(data) : []), [data]);
   const isMultiTask = taskIds.length > 1 || (data?.taskCount ?? 1) > 1;
 
+  // ── The stitch (Session 28) ───────────────────────────────────────────────
+  // Recorded past + live present, as ONE payload in the shape buildReplay
+  // already consumes. Everything difficult — de-duplicating an event that
+  // arrives both live and in a later flush, and refusing to apply anything
+  // before the sync point — happens inside `stitchLive`, which is pure and
+  // unit-tested. Returns `data` untouched when there is no live tail, so a
+  // recorded session takes byte-for-byte the path it always did.
+  const stitched = useMemo(
+    () => stitchLive(data, liveEvents, { syncedAt }),
+    [data, liveEvents, syncedAt],
+  );
+
   // Prompt 2 — per-task replay is the SAME engine run over a payload narrowed
   // to one task, so its reconstruction is still verified against that task's
-  // own recorded snapshots rather than being a second, weaker code path.
+  // own recorded snapshots rather than being a second, weaker code path. The
+  // narrowing runs AFTER the stitch, so watching one task of a multi-task exam
+  // live comes out of the same two pieces rather than a third code path.
   const replay = useMemo(
     () =>
-      data
-        ? buildReplay(selectedTask ? replayDataForTask(data, selectedTask) : data, {
+      stitched
+        ? buildReplay(selectedTask ? replayDataForTask(stitched, selectedTask) : stitched, {
             initialText: "",
           })
         : null,
-    [data, selectedTask],
+    [stitched, selectedTask],
   );
   const duration = replay?.totalDurationMs ?? 0;
+
+  // ── Where the playhead is ─────────────────────────────────────────────────
+  // While following, the position IS the end of the timeline — derived, not
+  // stored, so it can never lag behind an arriving keystroke by a render.
+  // Scrubbing detaches it (see `seek`), and "Jump to live" re-attaches it.
+  //
+  // Deliberately keyed on `following` ALONE and not on `liveMode`. When the
+  // student submits, `liveMode` goes false; if the position depended on it, the
+  // playhead would fall back to a stored `t` that was never advanced while
+  // following and the view would silently rewind to an empty document at the
+  // exact moment it is supposed to settle onto the final recorded session.
+  // Following means "pinned to the end of the timeline", which stays the right
+  // answer after the stream has stopped.
+  const position = following ? duration : t;
 
   // Switching task rewinds: the timelines are different lengths and a position
   // carried across would land somewhere arbitrary.
@@ -256,11 +428,12 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
     setSelectedTask(taskId);
     setT(0);
     setPlaying(false);
+    setFollowing(false); // an explicit choice to inspect, not to follow
   }, []);
 
   // ── Playback loop (rAF; text only re-renders when the frame text changes) ─
   useEffect(() => {
-    if (!playing || !replay) return;
+    if (!playing || following || !replay) return;
     let last = performance.now();
     let raf;
     const tick = (now) => {
@@ -283,14 +456,14 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed, skipIdle, replay]);
+  }, [playing, following, speed, skipIdle, replay]);
 
   // Session 24: the replay is file-aware. `stateAt` answers BOTH which file was
   // being edited at T and that file's exact text, so a file switch reads as a
   // labeled change rather than the content mysteriously jumping.
   const state = useMemo(
-    () => (replay ? replay.stateAt(t) : { fileName: null, text: "" }),
-    [replay, t],
+    () => (replay ? replay.stateAt(position) : { fileName: null, text: "" }),
+    [replay, position],
   );
   const text = state.text;
   const activeFileName = state.fileName;
@@ -302,18 +475,18 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
     () =>
       replay?.pasteMarks.find(
         (m) =>
-          t >= m.t &&
-          t <= m.t + PASTE_FLASH_MS &&
+          position >= m.t &&
+          position <= m.t + PASTE_FLASH_MS &&
           (m.fileName == null || m.fileName === activeFileName),
       ) ?? null,
-    [replay, t, activeFileName],
+    [replay, position, activeFileName],
   );
   const lastPaste = useMemo(() => {
     if (!replay) return null;
     let latest = null;
-    for (const m of replay.pasteMarks) if (m.t <= t) latest = m;
+    for (const m of replay.pasteMarks) if (m.t <= position) latest = m;
     return latest;
-  }, [replay, t]);
+  }, [replay, position]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -336,21 +509,47 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
     }
   }, [activePaste, text]);
 
+  // Any seek is a deliberate move into the past, so it detaches from the live
+  // edge. The stream keeps arriving and the timeline keeps growing — only the
+  // VIEW stays where the instructor put it, which is what "rewind while it's
+  // still happening" has to mean.
   const seek = useCallback(
-    (ms) => setT(Math.max(0, Math.min(duration, ms))),
+    (ms) => {
+      setFollowing(false);
+      setT(Math.max(0, Math.min(duration, ms)));
+    },
     [duration],
   );
+
+  const jumpToLive = useCallback(() => {
+    setPlaying(false);
+    setFollowing(true);
+  }, []);
+
+  // Play means something different at the live edge: there is nothing ahead to
+  // play towards, so pressing it there detaches and replays the session from the
+  // start. The button is LABELLED for that, so it is a stated action rather than
+  // a surprising jump.
+  const togglePlay = useCallback(() => {
+    if (following) {
+      setFollowing(false);
+      setT(0);
+      setPlaying(duration > 0);
+      return;
+    }
+    setPlaying((p) => !p && duration > 0);
+  }, [following, duration]);
 
   function handleKeyDown(e) {
     if (e.key === " ") {
       e.preventDefault();
-      setPlaying((p) => !p && duration > 0);
+      togglePlay();
     } else if (e.key === "ArrowLeft") {
       e.preventDefault();
-      seek(t - 5000);
+      seek(position - 5000);
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
-      seek(t + 5000);
+      seek(position + 5000);
     }
   }
 
@@ -386,6 +585,16 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
   const taskBundle = selectedTask ? forensicsResults?.tasks?.[selectedTask] ?? null : null;
   const shown = taskBundle ?? forensicsResults;
 
+  // Part 4 — an IN_PROGRESS session must say WHAT it is showing. The durable
+  // record ends at the last flush; everything since then exists only in the
+  // student's browser. Stating that is the difference between "here is the
+  // session up to 14:32:07" and silently implying the instructor is looking at
+  // the present moment.
+  const flushedThrough = recordedThrough(data);
+  const inProgress = status === "IN_PROGRESS";
+  const liveInfo = liveStatus ? LIVE_STATUS[liveStatus] : null;
+  const liveTailCount = replay.liveEventCount ?? 0;
+
   return (
     <div className="dvr-panel" tabIndex={0} onKeyDown={handleKeyDown}>
       <div className="dvr-header">
@@ -414,6 +623,42 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
           />
         )}
       </div>
+
+      {/* ── Live status + the in-progress record boundary (Session 28) ──────
+          One strip, because they answer the same question: how current is what
+          I am looking at? The live line is only rendered in live mode; the
+          "recorded up to" line is shown for ANY in-progress session, so the
+          non-live fallback (Part 4) is equally explicit rather than leaving the
+          instructor to assume the view is the present. */}
+      {(liveInfo || inProgress) && (
+        <div className="dvr-live-strip">
+          {liveInfo && (
+            <span className={`dvr-live-badge ${liveInfo.tone}`} title={liveError ?? undefined}>
+              <span className="dvr-live-dot">{liveInfo.dot}</span>
+              {liveStatus === "following" && !following
+                ? "LIVE — rewound (stream still recording)"
+                : liveInfo.text}
+            </span>
+          )}
+          {liveStatus === "following" && liveTailCount > 0 && (
+            <span className="dvr-live-note">
+              {liveTailCount} keystroke{liveTailCount === 1 ? "" : "s"} streamed since the last
+              flush — not yet in the durable record
+            </span>
+          )}
+          {liveError && <span className="dvr-live-note error">{liveError}</span>}
+          {inProgress && (
+            <span className="dvr-live-note">
+              {flushedThrough
+                ? `Recorded up to ${fmtWallClock(flushedThrough)} (last flush).`
+                : "Nothing flushed to the database yet."}
+              {liveStatus === "following"
+                ? " The current moment comes from the live stream."
+                : " The current moment is only visible on the live stream."}
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="dvr-forensics">
         {forensicsResults ? (
@@ -486,18 +731,36 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
         <div className="dvr-empty">
           {selectedTask
             ? `No keystroke activity recorded for ${taskLabel(selectedTask)}.`
-            : "No keystroke activity recorded for this session yet."}
+            : liveMode
+              ? "Waiting for the student's first keystrokes…"
+              : "No keystroke activity recorded for this session yet."}
         </div>
       ) : (
         <>
           <div className="dvr-controls">
             <button
               className="btn btn-secondary dvr-play"
-              onClick={() => setPlaying((p) => !p)}
-              title="Space = play/pause · ←/→ = seek 5s"
+              onClick={togglePlay}
+              title={
+                following
+                  ? "Leave the live edge and replay this session from the beginning"
+                  : "Space = play/pause · ←/→ = seek 5s"
+              }
             >
-              {playing ? "❚❚ Pause" : "▶ Play"}
+              {following ? "▶ Replay from start" : playing ? "❚❚ Pause" : "▶ Play"}
             </button>
+            {/* The way back from a rewind. Only offered while a live stream is
+                actually running, and only when detached — an always-visible
+                control that does nothing is worse than no control. */}
+            {liveMode && liveStatus === "following" && !following && (
+              <button
+                className="btn btn-primary dvr-jump-live"
+                onClick={jumpToLive}
+                title="Resume following the student's present moment"
+              >
+                ⟲ Jump to live
+              </button>
+            )}
             <label className="dvr-speed">
               Speed
               <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
@@ -515,17 +778,18 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
               Skip idle gaps ({replay.gaps.length})
             </label>
             <span className="dvr-clock mono">
-              {fmtClock(t)} / {fmtClock(duration)}
+              {fmtClock(position)} / {fmtClock(duration)}
+              {liveMode && following ? " · live edge" : ""}
             </span>
           </div>
 
           <div className="dvr-scrubber">
-            <div className="dvr-track">
+            <div className={`dvr-track ${liveMode && following ? "following" : ""}`}>
               <input
                 type="range"
                 min={0}
                 max={duration}
-                value={Math.round(t)}
+                value={Math.round(position)}
                 onChange={(e) => seek(Number(e.target.value))}
               />
               {/* Paste tick marks — click to jump straight to the moment */}
@@ -571,6 +835,18 @@ export default function DvrPlayer({ sessionId, initialTaskId = null }) {
             <span className="dvr-fidelity" title={FIDELITY_HINT[replay.exact ? "exact" : "approx"]}>
               {replay.exact ? "exact replay" : "approximate replay"}
             </span>
+            {/* The live tail is reconstructed from the same exact edits, on top
+                of a checkpoint that WAS verified against a flush — but it has
+                no snapshot of its own to be checked against yet, and saying so
+                is the same discipline the exact/approximate label follows. */}
+            {liveTailCount > 0 && (
+              <span
+                className="dvr-fidelity live"
+                title={`The last ${liveTailCount} keystroke(s) came from the live stream and have not been flushed, so they are reconstructed from the same exact edits but not yet verified against a stored snapshot.`}
+              >
+                + live edge (unflushed)
+              </span>
+            )}
           </div>
 
           <Editor

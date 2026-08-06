@@ -198,6 +198,72 @@
   margin-top: 2px;
 }
 
+/* ── Session 28 — live DVR ("ghost typer") ──────────────────────────────── */
+/* Colour always carries text here, same rule as the metric pills: a red dot
+   alone would be a claim, and the whole point of this strip is to state
+   plainly how current the view is. */
+.dvr-live-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border-bottom: 1px solid var(--border, #30363d);
+  background: var(--surface, #161b22);
+}
+
+.dvr-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill, 999px);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.dvr-live-badge.live { color: var(--danger, #ef4444); }
+.dvr-live-badge.pending { color: var(--warning, #f59e0b); }
+.dvr-live-badge.done { color: var(--accent, #388bfd); }
+.dvr-live-badge.error { color: var(--text-muted, #6e7681); }
+
+/* Only the genuinely live state pulses — a "syncing" or "lost" badge that
+   throbbed would read as a working stream. */
+.dvr-live-badge.live .dvr-live-dot {
+  animation: dvr-live-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes dvr-live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.dvr-live-note {
+  font-size: 10px;
+  color: var(--text-muted, #6e7681);
+}
+
+.dvr-live-note.error { color: var(--danger, #ef4444); }
+
+.dvr-jump-live {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+/* While following, the scrubber is a position readout rather than a control
+   the instructor is driving — the dimming says so without disabling it, since
+   grabbing it is exactly how you leave follow mode. */
+.dvr-track.following input[type="range"] {
+  opacity: 0.65;
+}
+
+.dvr-fidelity.live {
+  margin-left: 0;
+  color: var(--danger, #ef4444);
+}
+
 /* ── Session 19 — keystroke replay controls ─────────────────────────────── */
 .dvr-controls {
   display: flex;
