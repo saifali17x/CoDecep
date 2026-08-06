@@ -1,5 +1,11 @@
 import dotenv from 'dotenv'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+// Injected into the prompt from the SAME constant the validator enforces, so
+// the two can never drift. Note this is belt-and-braces: a generated list that
+// omits the baseline anyway is still safe, because resolveAllowlistFor() unions
+// the baseline in at validation time. Asking for it here just means the list an
+// instructor reviews looks correct on its own.
+import { BASELINE_ALLOWLIST } from './ast/allowlist'
 
 // Imports are hoisted, so this module evaluates before server.ts's own
 // dotenv.config() call runs — load .env here so GEMINI_API_KEY is available.
@@ -30,13 +36,9 @@ are ALLOWED to use in that week's assignments. Each week must be CUMULATIVE (wee
 everything from weeks 1-2 plus that week's new constructs).
 
 ALWAYS include this baseline in EVERY week (mandatory C++ boilerplate — without these, valid
-programs get falsely flagged):
-translation_unit, preproc_include, preproc_arg, system_lib_string, string_literal,
-string_content, escape_sequence, using_declaration, namespace_identifier, qualified_identifier,
-function_definition, function_declarator, primitive_type, type_identifier, compound_statement,
-parameter_list, declaration, init_declarator, expression_statement, return_statement,
-identifier, number_literal, char_literal, binary_expression, assignment_expression,
-call_expression, argument_list, field_expression
+programs get falsely flagged). Note it covers BOTH C++ I/O styles: \`using namespace std;\` with
+bare \`cout\`, and the fully-qualified \`std::cout\` form:
+${BASELINE_ALLOWLIST.join(', ')}
 
 Then ADD week-specific constructs based on what the syllabus teaches each week. Examples of
 Tree-sitter C++ node types for common topics:

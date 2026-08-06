@@ -249,19 +249,30 @@ export default function EditorPane({
           ...(assignmentId ? { assignmentId } : {}),
         }),
       });
-      const { isValid, violations } = await res.json();
+      const { isValid, violations, violationDetail } = await res.json();
       const key = `${fileTaskId ?? ""}::${fileName}`;
       const where = taskLabel ? `${taskLabel} / ${fileName}` : fileName;
       if (!isValid && violations.length > 0) {
         const sig = `${key}:${violations[0].nodeType}:${violations[0].line}`;
         if (sig !== lastViolationSig.current[key]) {
           lastViolationSig.current[key] = sig;
+          // The detail names the CONSTRUCT and the LINE, not just a count. An
+          // instructor reading "6 violation(s) in main.cpp" cannot act on it;
+          // "Used for_statement (line 12)" is a specific, checkable statement.
+          // `violationDetail` is formatted server-side so the alert, the stored
+          // report and the server log word the same finding identically; the
+          // fallback covers a server that predates the field.
+          const what =
+            violationDetail ??
+            `${violations[0]?.nodeType ?? "unknown"} (line ${violations[0]?.line ?? "?"})`;
           const payload = {
             type: "AST_VIOLATION",
             studentId,
             sessionId: sessionIdRef?.current ?? null,
             timestamp: Date.now(),
-            detail: `${violations.length} violation(s) in ${where}: ${violations[0]?.nodeType ?? "unknown"}`,
+            // "Used X" — a description of what was written, never a verdict on
+            // why (Constraint 7).
+            detail: `Used ${what} in ${where}`,
           };
           debugLog("[EMIT] AST_VIOLATION", payload);
           socket.emit("alert", payload);

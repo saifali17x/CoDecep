@@ -295,7 +295,11 @@
 .dvr-track input[type="range"] { width: 100%; accent-color: var(--info); cursor: pointer; }
 
 /* Paste tick marks on the scrubber — click to jump to the moment */
-.dvr-paste-mark {
+/* ── Scrubber checkpoint ticks (Fix 3) ───────────────────────────────────────
+   Three kinds, distinguished by SHAPE as well as color so the timeline is
+   readable without relying on color alone: paste = round, construct = diamond,
+   tab-out = tall bar. Each is also named in the legend and in its tooltip. */
+.dvr-tick {
   position: absolute;
   top: -3px;
   width: 8px;
@@ -307,9 +311,72 @@
   cursor: pointer;
   z-index: 2;
 }
-.dvr-paste-mark.external { background: var(--danger); }
-.dvr-paste-mark.internal { background: var(--warning); }
-.dvr-paste-mark:hover { transform: scale(1.4); }
+.dvr-tick:hover { transform: scale(1.4); }
+.dvr-tick:focus-visible { outline: 2px solid var(--focus, #58a6ff); outline-offset: 2px; }
+
+.dvr-tick.paste.external { background: var(--danger); }
+.dvr-tick.paste.internal { background: var(--warning); }
+
+/* Construct not permitted for this week — diamond. */
+.dvr-tick.ast {
+  background: #a855f7;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  z-index: 3;
+}
+.dvr-tick.ast:hover { transform: rotate(45deg) scale(1.4); }
+
+/* Tab-out — a tall bar, and PERSISTENT: full opacity across the whole
+   timeline, never fading or cooling with distance from the playhead. A
+   tab-out leaves no trace in the code itself, so the marker is the only
+   record of it in the replay; it stays obvious until the instructor hides it. */
+.dvr-tick.tabout {
+  top: -7px;
+  width: 3px;
+  height: 16px;
+  margin-left: -1.5px;
+  border-radius: 1px;
+  background: var(--danger);
+  opacity: 1;
+  box-shadow: 0 0 4px rgba(248, 81, 73, 0.9);
+  z-index: 4;
+}
+.dvr-tick.tabout:hover { transform: scaleY(1.25); }
+
+/* ── Legend ─────────────────────────────────────────────────────────────── */
+.dvr-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  margin-top: var(--space-2, 8px);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.dvr-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.dvr-legend-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.dvr-legend-swatch.paste { background: var(--danger); }
+.dvr-legend-swatch.ast { background: #a855f7; border-radius: 2px; transform: rotate(45deg); }
+.dvr-legend-swatch.tabout {
+  width: 3px;
+  height: 13px;
+  border-radius: 1px;
+  background: var(--danger);
+  box-shadow: 0 0 4px rgba(248, 81, 73, 0.9);
+}
+.dvr-legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  cursor: pointer;
+}
+.dvr-legend-note { color: var(--text-muted, var(--text-secondary)); font-style: italic; }
 
 .dvr-paste-label { color: var(--warning-alt); font-weight: 600; }
 .dvr-paste-label.active { color: var(--danger); }

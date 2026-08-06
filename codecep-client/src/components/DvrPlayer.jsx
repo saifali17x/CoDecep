@@ -6,6 +6,8 @@ import { apiFetch } from "../lib/api";
 import { debugLog } from "../debug";
 import { buildReplay, replayDataForTask, taskIdsInReplay } from "../lib/replayEngine";
 import { stitchLive, recordedThrough } from "../lib/liveStitch";
+import { describeViolationList } from "../lib/astReport";
+import { buildTickMarks, tickKindsPresent } from "../lib/scrubberMarks";
 import { languageOf, taskLabel } from "../lib/workspace";
 import TaskReport, { MergedFlagPill } from "./TaskReport";
 import {
@@ -151,16 +153,31 @@ function AstAuditRow({ audit }) {
             ? `${violations.length} disallowed construct(s) — flagged for review`
             : `${checkedFiles.length} file(s) clean`}
       </span>
+      {/* Fix 2 — WHICH construct and WHERE, per file. A count is not something
+          an instructor can check; "for_statement (line 12)" is. Findings are
+          de-duplicated by construct+line (one loop reported repeatedly is one
+          finding) and capped, with the remainder counted rather than dropped
+          silently. */}
       {Object.entries(byFile).map(([file, vs]) => (
         <span
           key={file}
           className="dvr-pill"
           style={{ color: LEVEL_COLORS.red, borderColor: LEVEL_COLORS.red }}
-          title={vs.map((v) => `line ${v.line}: ${v.nodeType}`).join("\n")}
+          title={`${file} — constructs not permitted for this week:\n${describeViolationList(
+            vs,
+            vs.length,
+          )}\nThis is a signal for instructor review, not a verdict.`}
         >
-          {file}: {[...new Set(vs.map((v) => v.nodeType))].join(", ")}
+          {file}: {describeViolationList(vs)}
         </span>
       ))}
+      {flag && (
+        <span className="dvr-severity-note">
+          These constructs are not permitted for this assignment&apos;s week. That is a
+          statement about what was written — judge it against the syllabus, not as
+          proof of misconduct.
+        </span>
+      )}
     </div>
   );
 }
@@ -207,6 +224,11 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(5);
   const [skipIdle, setSkipIdle] = useState(true);
+  // Fix 3 — tab-out ticks are ON by default and stay fully prominent wherever
+  // the playhead is. The toggle exists because a permanently loud marker can
+  // also crowd the timeline, so hiding them is the INSTRUCTOR's decision rather
+  // than something the player does on its own after a few seconds.
+  const [showTabOuts, setShowTabOuts] = useState(true);
 
   // ── Live mode state ───────────────────────────────────────────────────────
   // `following` is what makes this a ghost-typer rather than a player: while it
@@ -487,6 +509,33 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
     for (const m of replay.pasteMarks) if (m.t <= position) latest = m;
     return latest;
   }, [replay, position]);
+
+  // ── Scrubber checkpoints (Fix 3) ──────────────────────────────────────────
+  // Paste ticks come from the replay itself; tab-out and AST ticks come from
+  // the session's recorded Tier-1 log. Nothing new is captured.
+  //
+  // Tier-1 entries carry no taskId (gap #32), so they cannot honestly be placed
+  // on a single task's narrowed timeline — a tab-out at 04:12 of the session is
+  // not at 04:12 of Task 2. Rather than guess, per-task replay shows paste ticks
+  // only and the legend says why.
+  const tier1Events = selectedTask ? null : (data?.tier1Events ?? null);
+  const ticks = useMemo(
+    () =>
+      replay
+        ? buildTickMarks({
+            pasteMarks: replay.pasteMarks,
+            tier1Events,
+            startTime: replay.startTime,
+            totalDurationMs: replay.totalDurationMs,
+          })
+        : [],
+    [replay, tier1Events],
+  );
+  const legendKinds = useMemo(() => tickKindsPresent(ticks), [ticks]);
+  const visibleTicks = useMemo(
+    () => ticks.filter((tk) => (tk.kind === "tabout" ? showTabOuts : true)),
+    [ticks, showTabOuts],
+  );
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -792,20 +841,62 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
                 value={Math.round(position)}
                 onChange={(e) => seek(Number(e.target.value))}
               />
-              {/* Paste tick marks — click to jump straight to the moment */}
-              {replay.pasteMarks.map((m, i) => (
+              {/* Checkpoint ticks — paste, construct-not-permitted and tab-out.
+                  Click any of them to jump straight to that moment. Tab-outs
+                  render with `persistent`, which keeps them fully saturated
+                  wherever the playhead is. */}
+              {visibleTicks.map((tk, i) => (
                 <button
-                  key={i}
-                  className={`dvr-paste-mark ${m.provenance === "internal" ? "internal" : "external"}`}
-                  style={{ left: `${(m.t / duration) * 100}%` }}
-                  title={`Paste +${m.charCount} chars at ${fmtClock(m.t)}${m.provenance ? ` (${m.provenance})` : ""} — click to jump`}
+                  key={`${tk.kind}-${tk.t}-${i}`}
+                  className={`dvr-tick ${tk.kind} ${tk.variant} ${tk.persistent ? "persistent" : ""}`}
+                  style={{ left: `${tk.pct}%` }}
+                  title={tk.title}
+                  aria-label={tk.title}
                   onClick={() => {
-                    seek(m.t);
+                    seek(tk.t);
                     setPlaying(false);
                   }}
                 />
               ))}
             </div>
+
+            {/* Legend — every marker names itself in words as well as color, so
+                the timeline is readable without relying on color alone. */}
+            <div className="dvr-legend">
+              {legendKinds.map((k) => (
+                <span key={k.key} className="dvr-legend-item">
+                  <span className={`dvr-legend-swatch ${k.key}`} aria-hidden="true" />
+                  {k.legend}
+                  {k.key === "tabout" && (
+                    <label className="dvr-legend-toggle" title="Tab-out markers stay prominent across the whole timeline. Hide them if they crowd the view.">
+                      <input
+                        type="checkbox"
+                        checked={showTabOuts}
+                        onChange={(e) => setShowTabOuts(e.target.checked)}
+                      />
+                      show
+                    </label>
+                  )}
+                </span>
+              ))}
+              {/* Say what is NOT on the timeline, rather than letting an empty
+                  one read as "nothing happened" — the same discipline the
+                  Tier-1 counts follow. */}
+              {!selectedTask && data.tier1Events === null && (
+                <span className="dvr-legend-note">
+                  Tab-outs and construct checks were not recorded for this session —
+                  their absence here is unknown, not zero.
+                </span>
+              )}
+              {selectedTask && (
+                <span className="dvr-legend-note">
+                  Tab-out and construct markers are shown on the whole-session
+                  timeline only — Tier-1 alerts are recorded per session, not per
+                  task, so they cannot be placed on one task&apos;s timeline.
+                </span>
+              )}
+            </div>
+
             <div className="dvr-scrub-label">
               {lastPaste ? (
                 <span className={`dvr-paste-label ${activePaste ? "active" : ""}`}>

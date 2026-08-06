@@ -14,6 +14,12 @@ import multer from 'multer'
 import rateLimit from 'express-rate-limit'
 import { PDFParse } from 'pdf-parse'
 import { validateAST } from './ast/parser'
+import {
+  BASELINE_ALLOWLIST,
+  withBaseline,
+  summariseViolations,
+  describeViolations,
+} from './ast/allowlist'
 import { buildZip } from './lib/zip'
 import {
   validateWorkspace,
@@ -596,6 +602,13 @@ app.get(
       // already on screen at t=0 and is never seen arriving.
       openedAt: session.createdAt.getTime(),
       tier1Summary: summariseTier1(session.tier1_log, session.playback_log),
+      // Fix 3 — the raw Tier-1 record, so the DVR scrubber can place a tick at
+      // the MOMENT each tab-out / AST violation happened rather than only
+      // reporting a count. NULL (not []) when the session predates the log, so
+      // the player can say "not recorded" instead of drawing an empty timeline
+      // that looks like "nothing happened" — the same discipline tier1Summary
+      // already follows.
+      tier1Events: tier1EventsFor(session.tier1_log),
       snapshots,
       events,
     })
@@ -603,47 +616,16 @@ app.get(
 )
 
 // ── POST /api/ast/validate ─────────────────────────────────────────────────
-// Baseline C++ node types every minimal valid program contains. Control-flow
-// constructs (for_statement / while_statement / do_statement) are deliberately
-// ABSENT — they must still flag. ERROR/MISSING are not listed: the walker in
-// ast/parser.ts drops them so mid-typing parse states never raise violations.
-const week1Allowlist = [
-  // Structural / translation unit
-  'translation_unit',
-  'preproc_include',      // #include
-  'preproc_arg',
-  'system_lib_string',    // <iostream>
-  'string_literal',       // "..."
-  'string_content',       // text inside a string_literal
-  'escape_sequence',      // "\n" inside a string_literal
-  'using_declaration',    // using namespace std;
-  'namespace_identifier',
-  'qualified_identifier', // std::cout
-
-  // Function structure
-  'function_definition',
-  'function_declarator',
-  'primitive_type',       // int, void, char, ...
-  'type_identifier',      // string, and other non-primitive type names
-  'compound_statement',   // { ... }
-  'parameter_list',
-
-  // Basic statements & expressions (cout / cin / return / assignment)
-  'declaration',
-  'init_declarator',
-  'expression_statement',
-  'return_statement',
-  'identifier',
-  'number_literal',
-  'char_literal',
-  'character',            // the char inside a char_literal
-  'binary_expression',    // << chaining and arithmetic
-  'assignment_expression',
-  'call_expression',
-  'argument_list',
-  'field_expression',
-  'field_identifier',     // the member name in a field_expression
-]
+// The baseline set moved to ast/allowlist.ts, where it is now UNIONED into
+// every resolved week list rather than only used as the no-syllabus fallback.
+// Read the header comment there before changing it: a real stored class
+// allowlist was missing `namespace_identifier`, which made the perfectly valid
+// `std::cout` style raise violations against honest students.
+// Control-flow constructs (for_statement / while_statement / do_statement) stay
+// deliberately ABSENT from the baseline — they must still flag. ERROR/MISSING
+// are not listed either: the walker in ast/parser.ts drops them so mid-typing
+// parse states never raise violations.
+const week1Allowlist = BASELINE_ALLOWLIST
 
 // Given the CLASS's { weeks: {...} } allowlist, pick the list for an
 // assignment's week. Falls back to the highest available week <= that week,
@@ -682,11 +664,17 @@ function resolveWeekAllowlist(
 // against exactly the same construct set.
 // A `function` declaration (not a const arrow) so the worker, which is defined
 // earlier in this file, can call it; it only reads week1Allowlist at call time.
+//
+// EVERY return path goes through `withBaseline()`. That is the whole of Fix 1:
+// a class allowlist is a set of TAUGHT constructs layered on top of mandatory
+// C++ boilerplate, never a replacement for it. Gemini is still asked to include
+// the baseline and an instructor still edits the list — but neither is trusted
+// to get it right, because in the live database neither did.
 async function resolveAllowlistFor(
   assignmentId: string | null | undefined,
 ): Promise<{ list: string[]; source: string }> {
   if (typeof assignmentId !== 'string' || assignmentId.length === 0) {
-    return { list: week1Allowlist, source: 'default' }
+    return { list: withBaseline(null), source: 'default' }
   }
   try {
     const assignment = await prisma.assignment.findUnique({
@@ -695,12 +683,17 @@ async function resolveAllowlistFor(
     })
     if (assignment?.class?.allowlist) {
       const resolved = resolveWeekAllowlist(assignment.class.allowlist, assignment.week)
-      if (resolved) return { list: resolved, source: `class allowlist week${assignment.week}` }
+      if (resolved) {
+        return {
+          list: withBaseline(resolved),
+          source: `class allowlist week${assignment.week} + baseline`,
+        }
+      }
     }
   } catch (err) {
     console.error('[AST] Allowlist lookup failed — using default:', err instanceof Error ? err.message : err)
   }
-  return { list: week1Allowlist, source: 'default' }
+  return { list: withBaseline(null), source: 'default' }
 }
 
 // ── Submit-time AST audit over EVERY code file (Session 24, Change B2) ──────
@@ -721,7 +714,14 @@ async function auditCodeFiles(snapshots: Record<string, string>, assignmentId: s
     ([name, text]) => isCodeFileName(name) && typeof text === 'string' && text.trim().length > 0,
   )
   if (codeFiles.length === 0) {
-    return { checkedFiles: [], violations: [], flag: false, allowlistSource: 'none', reason: null }
+    return {
+      checkedFiles: [],
+      violations: [],
+      violationSummary: summariseViolations([]),
+      flag: false,
+      allowlistSource: 'none',
+      reason: null,
+    }
   }
 
   const { list, source } = await resolveAllowlistFor(assignmentId)
@@ -737,13 +737,20 @@ async function auditCodeFiles(snapshots: Record<string, string>, assignmentId: s
   }
 
   const flag = violations.length > 0
+  // Fix 2 — the stored record names the constructs, so an instructor reading a
+  // submitted session sees "used for_statement (line 12)" rather than a count
+  // they cannot act on. `violations` is unchanged; both fields below are added.
+  const violationSummary = summariseViolations(violations)
   return {
     checkedFiles: codeFiles.map(([name]) => name),
     violations,
+    violationSummary,
     flag,
     allowlistSource: source,
     reason: flag
-      ? `${violations.length} disallowed construct(s) across ${new Set(violations.map((v) => v.fileName)).size} file(s) — probabilistic signal requiring instructor review`
+      ? `Used ${describeViolations(violationSummary)} — ${violations.length} occurrence(s) across ` +
+        `${new Set(violations.map((v) => v.fileName)).size} file(s); construct(s) not permitted for ` +
+        `this week. Probabilistic signal requiring instructor review.`
       : null,
   }
 }
@@ -765,8 +772,22 @@ app.post('/api/ast/validate', validate(astValidateSchema), async (req: Request, 
   const { list: allowlist, source: allowlistSource } = await resolveAllowlistFor(assignmentId)
 
   const result = await validateAST(code, allowlist)
-  debugLog(`[AST] Validated ${result.violations.length} violation(s) — isValid: ${result.isValid} (allowlist: ${allowlistSource})`)
-  res.status(200).json(result)
+
+  // Fix 2 — say WHICH construct, and where. `violations` keeps its exact
+  // existing shape (full list, every occurrence) so nothing that already reads
+  // it changes; `violationSummary` is the de-duplicated, capped version and
+  // `violationDetail` is the ready-made sentence the client puts straight into
+  // the AST_VIOLATION alert. Formatting lives here so the alert text, the
+  // instructor report and the server log cannot word the same finding three
+  // different ways.
+  const violationSummary = summariseViolations(result.violations)
+  const violationDetail = describeViolations(violationSummary)
+
+  debugLog(
+    `[AST] Validated ${result.violations.length} violation(s) — isValid: ${result.isValid} ` +
+      `(allowlist: ${allowlistSource})${result.isValid ? '' : ` — ${violationDetail}`}`
+  )
+  res.status(200).json({ ...result, violationSummary, violationDetail })
 })
 
 // ── POST /api/execute ─────────────────────────────────────────────────────
@@ -1725,6 +1746,25 @@ async function recordTier1Alert(payload: {
     // Never let the record break the live alert path.
     console.error(`[TIER1] Failed to record ${payload.type}:`, (err as Error).message)
   }
+}
+
+// Fix 3 — the Tier-1 record as a timeline rather than a tally. Only the three
+// fields the scrubber needs are projected, so nothing else the relay ever
+// records leaks into an instructor payload by accident.
+//
+// `tier1_log` has no hard size cap (gap #21) — AST violations are debounced and
+// de-duplicated client-side and tab-outs are inherently low-volume, so real
+// sessions record a handful. The cap here is purely defensive: it bounds the
+// payload without silently pretending the extra events did not happen, which is
+// what `truncated` on the reader side would otherwise have no way to know.
+const TIER1_EVENT_CAP = 500
+
+function tier1EventsFor(tier1Log: unknown) {
+  if (!Array.isArray(tier1Log)) return null // predates the record — not "none"
+  return (tier1Log as { type?: string; timestamp?: number; detail?: string }[])
+    .filter((e) => e && typeof e.type === 'string' && Number.isFinite(Number(e.timestamp)))
+    .slice(0, TIER1_EVENT_CAP)
+    .map((e) => ({ type: e.type, timestamp: Number(e.timestamp), detail: e.detail ?? null }))
 }
 
 // Counts per Tier-1 type for the report. `recorded: false` means this session
