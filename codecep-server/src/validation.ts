@@ -62,10 +62,29 @@ export const createAssignmentSchema = z.looseObject({
     .min(1, 'taskCount must be 1–6')
     .max(6, 'taskCount must be 1–6')
     .optional(),
-  // Timed submission window (Feature 1). Minutes from when each STUDENT starts.
-  // Optional and absent-means-untimed, so every existing caller keeps creating
-  // the untimed assignment it always did. Capped at 24h: a longer "window" is a
-  // take-home, where a per-session countdown is the wrong model entirely.
+  // ── Scheduled submission window (Feature 1, wall-clock) ────────────────────
+  // The instructor schedules the sitting: an opening instant and a closing
+  // instant, shared by every student. Both optional and absent-means-unscheduled,
+  // so every existing caller keeps creating the untimed assignment it always did.
+  //
+  // Accepted as ISO strings (what an <input type="datetime-local"> plus a
+  // timezone offset produces) and rejected outright if unparseable, rather than
+  // being silently stored as an invalid date that would later read as untimed.
+  opensAt: z
+    .string()
+    .trim()
+    .refine((s) => s === '' || Number.isFinite(Date.parse(s)), 'opensAt must be a valid date/time')
+    .optional(),
+  closesAt: z
+    .string()
+    .trim()
+    .refine((s) => s === '' || Number.isFinite(Date.parse(s)), 'closesAt must be a valid date/time')
+    .optional(),
+  // The instructor-UI CONVENIENCE only: with an `opensAt` and no `closesAt`, the
+  // route computes the close from this duration. It is never enforced on its own
+  // — an assignment with a duration but no opening instant is unscheduled.
+  // Capped at 24h: a longer "window" is a take-home, where a countdown is the
+  // wrong model entirely.
   windowMinutes: z.coerce
     .number()
     .int('windowMinutes must be a whole number of minutes')

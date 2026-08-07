@@ -110,6 +110,61 @@ export const ALERT_TYPE_INFO = {
 export const REVIEW_FRAMING =
   "A flag is a probabilistic signal for instructor review, judged against the task — never proof of misconduct.";
 
+// ── Which signals MEAN anything, per exam type ───────────────────────────────
+//
+// A LIVE_LAB is proctored and sat in one continuous sitting, so the full suite
+// reads sensibly: leaving the exam screen is notable, and a program compiled
+// once in a two-hour lab is worth a look.
+//
+// An ASSESSMENT is a take-home done over hours or days, and both of those stop
+// being signals. Of course the student left the screen — they ate dinner. Of
+// course the compile count is whatever it is: there was no sitting to compare it
+// against. Showing them anyway would be worse than showing nothing, because an
+// instructor who learns to dismiss two of the six indicators learns to skim all
+// six.
+//
+// This is a DISPLAY gate. The data is still captured and still stored — the
+// server withholds these metrics only from the merged review signal (see
+// forensics/metrics.ts), and a session can be re-read under a different lens
+// later. An unknown/absent type shows everything, which is the behavior that
+// existed before this gate.
+export const METRICS_HIDDEN_FOR_ASSESSMENT = ["metricA"];
+export const TIER1_HIDDEN_FOR_ASSESSMENT = ["tabOut"];
+export const ALERT_TYPES_HIDDEN_FOR_ASSESSMENT = ["TAB_OUT"];
+
+/** Take-home? Anything that is not literally ASSESSMENT is treated as a lab. */
+export function isTakeHome(assignmentType) {
+  return assignmentType === "ASSESSMENT";
+}
+
+/** Should this metric be shown for this exam type? */
+export function isMetricShownFor(key, assignmentType) {
+  return !isTakeHome(assignmentType) || !METRICS_HIDDEN_FOR_ASSESSMENT.includes(key);
+}
+
+/** Should this Tier-1 counter be shown for this exam type? */
+export function isTier1ShownFor(key, assignmentType) {
+  return !isTakeHome(assignmentType) || !TIER1_HIDDEN_FOR_ASSESSMENT.includes(key);
+}
+
+/** Should this live alert type be surfaced for this exam type? */
+export function isAlertTypeShownFor(type, assignmentType) {
+  return !isTakeHome(assignmentType) || !ALERT_TYPES_HIDDEN_FOR_ASSESSMENT.includes(type);
+}
+
+/** Filter a list of metric keys down to the ones this exam type shows. */
+export function shownMetricKeys(keys, assignmentType) {
+  return keys.filter((k) => isMetricShownFor(k, assignmentType));
+}
+
+/**
+ * Why two indicators are missing on a take-home. Shown wherever the gate hides
+ * something, because a silently shorter report is indistinguishable from a
+ * broken one.
+ */
+export const ASSESSMENT_GATE_NOTE =
+  "Take-home assessment: testing/run count and leaving the exam screen are not shown — over hours or days they carry no signal. Typed-vs-pasted, pastes, typing pattern and allowed constructs still apply.";
+
 export function metricInfo(key) {
   return METRIC_INFO[key] ?? null;
 }

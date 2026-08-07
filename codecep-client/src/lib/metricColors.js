@@ -111,17 +111,56 @@ export function astAuditSeverity(flag, violationCount) {
     : { level: "green", label: "constructs allowed" };
 }
 
+// ── Authorship, and why the DISPLAYED percentage is capped at 100% ──────────
+//
+// `typedRatio` is typed characters over final program length, so it can exceed
+// 1.0 honestly: auto-closed brackets and quotes insert characters the student
+// then overtypes, and re-typing or heavily editing a section authors more
+// characters than survive into the submitted file (gap #25/#26 — measured 1.02
+// on a genuinely hand-typed control session). "103% typed" is arithmetically
+// right and reads as a bug, so the DISPLAY is clamped to 100%.
+//
+// Only the display. The stored value is untouched and the flag math is
+// untouched — a ratio over 1.0 still means "definitely authored" and still does
+// not flag, because the metric only ever flags a ratio that is too LOW. The
+// clamp can therefore never turn a flag into a pass or the reverse.
+export const TYPED_RATIO_DISPLAY_MAX = 1;
+
+/** The percentage to SHOW: clamped to 0–100. Null when there is no number. */
+export function typedRatioPercent(typedRatio) {
+  if (typeof typedRatio !== "number" || !Number.isFinite(typedRatio)) return null;
+  return Math.round(Math.min(TYPED_RATIO_DISPLAY_MAX, Math.max(0, typedRatio)) * 100);
+}
+
+/** "87% typed" — the one formatter every surface uses, so none can drift. */
+export function formatTypedRatio(typedRatio) {
+  const pct = typedRatioPercent(typedRatio);
+  return pct === null ? null : `${pct}% typed`;
+}
+
+/** Was the shown number actually capped? Drives the tooltip's explanation. */
+export function isTypedRatioClamped(typedRatio) {
+  return (
+    typeof typedRatio === "number" &&
+    Number.isFinite(typedRatio) &&
+    typedRatio > TYPED_RATIO_DISPLAY_MAX
+  );
+}
+
 // Authorship (Session 22) — how much of the submitted program can be accounted
 // for by typing. LOWER typed share = more suspicious. `typedRatio` is optional
 // context; the flag is what the worker decided (MIN_CODE_LEN / TYPED_MIN are
 // tunable defaults, not empirical law — same status as RUNCOUNT_OK_DEFAULT).
 export function authorshipSeverity(flag, typedRatio) {
-  const pct =
-    typeof typedRatio === "number" && Number.isFinite(typedRatio)
-      ? `${Math.round(typedRatio * 100)}% typed`
-      : null;
+  const pct = formatTypedRatio(typedRatio);
+  // Shown capped, explained in the tooltip rather than silently rounded away:
+  // an instructor who wonders why it says exactly 100% gets the reason.
+  const clampNote = isTypedRatioClamped(typedRatio)
+    ? " (capped at 100% — more characters were typed than survive in the final" +
+      " program, from re-typing and edits)"
+    : "";
   if (flag === null || flag === undefined) {
-    return { level: "grey", label: pct ?? "authorship — insufficient data" };
+    return { level: "grey", label: pct ? `${pct}${clampNote}` : "authorship — insufficient data" };
   }
   return flag
     ? {
@@ -130,5 +169,5 @@ export function authorshipSeverity(flag, typedRatio) {
           ? `${pct} — mostly pasted (flagged for review)`
           : "mostly pasted — flagged for review",
       }
-    : { level: "green", label: pct ? `${pct} — no flag` : "no flag" };
+    : { level: "green", label: pct ? `${pct} — no flag${clampNote}` : "no flag" };
 }

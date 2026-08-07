@@ -23,6 +23,9 @@ import {
   burstHistoryForTask,
   runCountForTask,
   computeMergedReview,
+  relevantFlaggableMetrics,
+  isMetricRelevantFor,
+  FLAGGABLE_METRICS,
   flaggedMetricsOf,
 } from './metrics'
 
@@ -631,6 +634,89 @@ describe('computeMergedReview', () => {
     expect(flaggedMetricsOf(null)).toEqual([])
     expect(flaggedMetricsOf({ metricB: { flag: 'yes' }, authorship: { flag: true } })).toEqual([
       'authorship',
+    ])
+  })
+})
+
+// ── Exam-type relevance gate (ASSESSMENT hides run count) ──────────────────
+// A LIVE_LAB is one proctored sitting, so a program compiled once is worth a
+// look. A take-home ASSESSMENT has no sitting to compare a compile count
+// against, so Metric A measures the student's habits and nothing else. It is
+// still COMPUTED and still stored — it is only withheld from the review signal.
+
+describe('exam-type relevance gate', () => {
+  const runCountOnly = {
+    label: 'Task 1',
+    metricA: { flag: true },
+    metricB: { flag: false },
+    metricC: { flag: false },
+    authorship: { flag: false },
+    astAudit: { flag: false },
+  }
+  const clean = { ...runCountOnly, metricA: { flag: false } }
+  const noFlags = {
+    metricA: { flag: false },
+    metricB: { flag: false },
+    metricC: { flag: false },
+    authorship: { flag: false },
+    astAudit: { flag: false },
+  }
+
+  it('keeps every metric relevant for a LIVE_LAB', () => {
+    expect(relevantFlaggableMetrics('LIVE_LAB')).toEqual([...FLAGGABLE_METRICS])
+    expect(isMetricRelevantFor('metricA', 'LIVE_LAB')).toBe(true)
+  })
+
+  it('drops ONLY metricA for an ASSESSMENT', () => {
+    expect(relevantFlaggableMetrics('ASSESSMENT')).toEqual([
+      'metricB',
+      'metricC',
+      'authorship',
+      'astAudit',
+    ])
+    expect(isMetricRelevantFor('metricA', 'ASSESSMENT')).toBe(false)
+    expect(isMetricRelevantFor('authorship', 'ASSESSMENT')).toBe(true)
+  })
+
+  it('treats an unknown/absent type as a lab — shows everything, the old behavior', () => {
+    for (const t of [null, undefined, '', 'SOMETHING_ELSE']) {
+      expect(relevantFlaggableMetrics(t)).toEqual([...FLAGGABLE_METRICS])
+    }
+    expect(flaggedMetricsOf(runCountOnly)).toEqual(['metricA'])
+  })
+
+  it('flaggedMetricsOf withholds a gated metric for an ASSESSMENT', () => {
+    expect(flaggedMetricsOf(runCountOnly, 'LIVE_LAB')).toEqual(['metricA'])
+    expect(flaggedMetricsOf(runCountOnly, 'ASSESSMENT')).toEqual([])
+  })
+
+  it('a run-count-only flag does NOT flag the merged signal on an ASSESSMENT', () => {
+    const lab = computeMergedReview({ task1: runCountOnly }, noFlags, 1, 'LIVE_LAB')
+    expect(lab.flag).toBe(true)
+    expect(lab.excludedMetrics).toEqual([])
+
+    const takeHome = computeMergedReview({ task1: runCountOnly }, noFlags, 1, 'ASSESSMENT')
+    expect(takeHome.flag).toBe(false)
+    expect(takeHome.flaggedTaskCount).toBe(0)
+    expect(takeHome.reason).toBeNull()
+    // Stated, never silent: the report says which signal it set aside.
+    expect(takeHome.excludedMetrics).toEqual(['metricA'])
+    expect(takeHome.assignmentType).toBe('ASSESSMENT')
+  })
+
+  it('still flags an ASSESSMENT on the signals that DO survive a take-home', () => {
+    const pastedTakeHome = { ...clean, authorship: { flag: true } }
+    const merged = computeMergedReview({ task1: pastedTakeHome }, noFlags, 1, 'ASSESSMENT')
+    expect(merged.flag).toBe(true)
+    expect(merged.flaggedTasks[0].metrics).toEqual(['authorship'])
+  })
+
+  it('withholds a gated metric from the SESSION-level flags too, not just tasks', () => {
+    const merged = computeMergedReview({}, runCountOnly, 1, 'ASSESSMENT')
+    expect(merged.sessionFlaggedMetrics).toEqual([])
+    expect(merged.flag).toBe(false)
+    expect(computeMergedReview({}, runCountOnly, 1, 'LIVE_LAB').sessionFlaggedMetrics).toEqual([
+      'metricA',
     ])
   })
 })

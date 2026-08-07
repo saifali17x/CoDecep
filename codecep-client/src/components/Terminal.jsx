@@ -115,10 +115,12 @@ export default function Terminal({
     const ro = new ResizeObserver(doFit);
     ro.observe(host);
 
+    // Kept to one line. The banner a student sees at the start of an exam
+    // should tell them what this pane is, not explain the execution
+    // architecture to them — the stdin box already says what to put where, and
+    // the honest note about the batch model belongs in the docs (CLAUDE.md
+    // §7.4), not in front of someone with a timer running.
     term.writeln(`${ANSI.cyan}${ANSI.bold}CoDecep terminal${ANSI.reset}${ANSI.dim} — program output only.${ANSI.reset}`);
-    term.writeln(
-      `${ANSI.dim}Batch execution: type every input your program reads into "Program input", then press Run Code.${ANSI.reset}`
-    );
     term.writeln(`${ANSI.dim}$${ANSI.reset}`);
 
     return () => {
@@ -222,12 +224,13 @@ export default function Terminal({
             spellCheck={false}
             placeholder={"5\n7"}
           />
-          {/* Honest framing, unchanged (CLAUDE.md §7.4): this is batch
-              execution, so every input goes in BEFORE the run. Stated as how it
-              works, not as an apology, and never implying live interactivity. */}
+          {/* The SHORT form of the honest framing (CLAUDE.md §7.4). "Sent with
+              the run" still tells a student the input goes in before they press
+              Run — which is the only part of the batch model that changes what
+              they do — without explaining the execution architecture to someone
+              sitting a timed exam. The full note stays in the docs. */}
           <p className="console-stdin-note">
-            One input per line, in the order your program reads them. Inputs are sent
-            with the run — this is batch execution, not a live shell.
+            One input per line, in the order your program reads them — sent with the run.
           </p>
         </div>
       </div>

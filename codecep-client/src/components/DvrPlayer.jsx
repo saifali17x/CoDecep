@@ -19,6 +19,10 @@ import {
   describeMetric,
   describeTier1,
   metricInfo,
+  isTier1ShownFor,
+  shownMetricKeys,
+  isTakeHome,
+  ASSESSMENT_GATE_NOTE,
 } from "../lib/metricLabels";
 import {
   metricASeverity,
@@ -101,12 +105,19 @@ function MetricPill({ metricKey, metric, review = null }) {
 // Counts, colored by whether anything fired — never a verdict on its own.
 // `recorded: false` = the session predates the Tier-1 record, so tab-outs and
 // AST violations are UNKNOWN and must read "not recorded", never "0".
-function Tier1Row({ summary }) {
+function Tier1Row({ summary, assignmentType }) {
   if (!summary) return null;
+  // A take-home ASSESSMENT drops the tab-out counter: over hours or days,
+  // leaving the exam screen is what a student does, not a signal. The alert is
+  // still recorded — this is a display gate, so the same session read as a lab
+  // would show it. Pastes and construct violations still mean something and stay.
+  const entries = Object.entries(TIER1_INFO).filter(([key]) =>
+    isTier1ShownFor(key, assignmentType),
+  );
   return (
     <div className="dvr-tier1">
       <span className="dvr-tier1-title">What happened live during the exam:</span>
-      {Object.entries(TIER1_INFO).map(([key, info]) => {
+      {entries.map(([key, info]) => {
         const n = summary[key];
         const unknown = n === null || n === undefined;
         const color = unknown
@@ -570,7 +581,17 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
   // on a single task's narrowed timeline — a tab-out at 04:12 of the session is
   // not at 04:12 of Task 2. Rather than guess, per-task replay shows paste ticks
   // only and the legend says why.
-  const tier1Events = selectedTask ? null : (data?.tier1Events ?? null);
+  //
+  // A take-home ASSESSMENT also drops its tab-out ticks, for the same reason the
+  // counter is dropped: a timeline studded with markers for "left the screen"
+  // over a three-day window buries the pastes and construct violations that do
+  // mean something. The entries stay in the record; only the display is gated.
+  const tier1Events = useMemo(() => {
+    if (selectedTask) return null;
+    const all = data?.tier1Events ?? null;
+    if (!all || !isTakeHome(data?.assignmentType)) return all;
+    return all.filter((e) => e?.type !== "TAB_OUT");
+  }, [selectedTask, data?.tier1Events, data?.assignmentType]);
   const ticks = useMemo(
     () =>
       replay
@@ -770,7 +791,7 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
                 {taskBundle ? "'s own forensics" : " — no per-task forensics recorded"}:
               </span>
             )}
-            {METRIC_ORDER.map((key) => (
+            {shownMetricKeys(METRIC_ORDER, data.assignmentType).map((key) => (
               <MetricPill
                 key={key}
                 metricKey={key}
@@ -804,6 +825,11 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
               other student's result. Tab-outs, pastes and construct checks are factual
               records, so they carry no judgment.
             </span>
+            {/* A silently shorter report is indistinguishable from a broken
+                one, so the gate says what it dropped and why. */}
+            {isTakeHome(data.assignmentType) && (
+              <span className="dvr-severity-note">{ASSESSMENT_GATE_NOTE}</span>
+            )}
             <span className="dvr-severity-note">
               Colors are severity guidance — "flagged" means flagged for instructor
               review. The run-count and typed-share thresholds are configurable
@@ -818,13 +844,17 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
         )}
       </div>
 
-      <Tier1Row summary={data.tier1Summary} />
+      <Tier1Row summary={data.tier1Summary} assignmentType={data.assignmentType} />
       <AstAuditRow audit={shown?.astAudit} />
 
       {/* The four metric cards above carry their own descriptions inline; this
           adds the construct check and the three live-event kinds, so every
           signal on this screen is explained in one place. */}
-      <MetricGlossary keys={["astAudit", "merged"]} includeTier1 />
+      <MetricGlossary
+        keys={["astAudit", "merged"]}
+        includeTier1
+        assignmentType={data.assignmentType}
+      />
 
       {/* Per-task breakdown + merged report (Prompt 2). Rendered only for a
           genuinely multi-task session: a single-task exam shows exactly the
@@ -839,6 +869,7 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
           sessionId={sessionId}
           judgments={judgments}
           onJudged={recordJudgment}
+          assignmentType={data.assignmentType}
         />
       )}
 

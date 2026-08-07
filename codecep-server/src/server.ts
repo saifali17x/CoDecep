@@ -22,7 +22,14 @@ import {
 } from './ast/allowlist'
 import { buildZip } from './lib/zip'
 import { decideSessionAction, buildRestorePayload } from './lib/sessionLifecycle'
-import { windowStatusFor, isSubmitAllowed, minutesLate } from './lib/examWindow'
+import {
+  windowStatusFor,
+  isSubmitAllowed,
+  minutesLate,
+  minutesUntilOpen,
+  closesAtFrom,
+  windowMinutesBetween,
+} from './lib/examWindow'
 import { isNetworkAllowed, normalizeIp, validateIpRule } from './lib/ipAccess'
 import { parseReviewInput, reviewOut } from './lib/metricReview'
 import {
@@ -187,6 +194,20 @@ const forensicsWorker = new Worker(
       return
     }
 
+    // Which signals mean anything here depends on the KIND of exam this was: a
+    // take-home ASSESSMENT makes Metric A (compile count) and tab-outs
+    // meaningless, so they must not drive the review flag. Read once, stored on
+    // the result so every reader gates the same way without another lookup.
+    // Unknown/absent → treated as LIVE_LAB, i.e. the pre-existing behavior.
+    const assignmentType = session.assignmentId
+      ? (
+          await prisma.assignment.findUnique({
+            where: { id: session.assignmentId },
+            select: { type: true },
+          })
+        )?.type ?? null
+      : null
+
     const runCount = session.runCount ?? 0
     // The submitted program's length — the denominator authorship reasons in,
     // and the test for whether a sparse B/C result is "nothing happened" or
@@ -278,10 +299,15 @@ const forensicsWorker = new Worker(
     // hand-typed ones can pull the session's typedRatio back over the threshold
     // and the whole session reads clean. The REVIEW signal is therefore
     // any-task-flagged, never the average — a flagged task can no longer hide.
+    //
+    // On an ASSESSMENT the merged signal deliberately IGNORES Metric A: a
+    // take-home has no sitting to compare a compile count against, so letting it
+    // flag would train instructors to dismiss the flag that does matter.
     const merged = computeMergedReview(
       tasks,
       { metricA, metricB, metricC, authorship, astAudit },
       taskIds.length,
+      assignmentType,
     )
 
     await prisma.session.update({
@@ -299,6 +325,9 @@ const forensicsWorker = new Worker(
           astAudit,
           // Additive.
           taskCount: taskIds.length,
+          // The exam type this session was sat under, so every reader gates the
+          // display of type-irrelevant signals identically without a lookup.
+          assignmentType,
           tasks,
           // Prompt 2: the cross-task review signal. Additive too — every
           // existing reader that only knows the five keys above is unaffected.
@@ -473,26 +502,31 @@ app.post(
       })
     )
 
-    // Timed window (Feature 1): the deadline is SERVER-COMPUTED and handed back
-    // so the exam UI can count down to a fixed instant instead of doing its own
-    // arithmetic on its own clock. It is display data — the submit route
-    // re-derives and re-checks this independently, so a client that ignores or
-    // fakes it gains nothing.
-    const windowMinutes = hasAssignment
-      ? (
-          await withRetry(() =>
-            prisma.assignment.findUnique({
-              where: { id: assignmentId },
-              select: { windowMinutes: true },
-            })
-          )
-        )?.windowMinutes ?? null
+    // Scheduled window (Feature 1, wall-clock): the deadline is the assignment's
+    // OWN `closesAt` — the same instant for every student — handed back so the
+    // exam UI can count down to it instead of doing arithmetic on its own clock.
+    // It is display data; the submit route re-derives and re-checks this
+    // independently, so a client that ignores or fakes it gains nothing.
+    //
+    // Note the student's start time is NOT an input any more. That is the whole
+    // change: a student who opens the paper late gets less time, exactly as they
+    // would in a room with a clock on the wall.
+    const schedule = hasAssignment
+      ? await withRetry(() =>
+          prisma.assignment.findUnique({
+            where: { id: assignmentId },
+            select: { opensAt: true, closesAt: true },
+          })
+        )
       : null
     const windowFor = (startedAt: Date) => {
-      const w = windowStatusFor(windowMinutes, startedAt, Date.now())
+      const w = windowStatusFor(schedule?.opensAt, schedule?.closesAt, Date.now())
       return {
         startedAt: startedAt.getTime(),
+        opensAt: w.opensAt,
+        closesAt: w.closesAt,
         deadlineAt: w.deadlineAt,
+        windowState: w.state,
         windowMinutes: w.windowMinutes,
         // Lets the countdown correct for a skewed client clock (see WindowStatus).
         serverNow: w.serverNow,
@@ -746,38 +780,60 @@ app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: R
 app.post('/api/session/:id/submit', async (req: Request, res: Response) => {
   const sessionId = String(req.params.id)
   try {
-    // ── Timed submission window (Feature 1) ────────────────────────────────
+    // ── Scheduled submission window (Feature 1, wall-clock) ────────────────
     // THE security-critical check, and it lives here — before the status flip —
     // for two reasons: a rejected submission must leave the session IN_PROGRESS
     // (the student is not locked out of a window that is still open for an
-    // instructor to extend), and the deadline must be computed from the
-    // SERVER's clock against the SERVER's record of when the student started.
-    // The exam UI's countdown is a convenience; nothing the client sends is
-    // consulted here, so a fiddled system clock cannot widen the window.
+    // instructor to extend), and the verdict must be computed from the SERVER's
+    // clock against the assignment's own scheduled instants. The exam UI's
+    // countdown is a convenience; nothing the client sends is consulted here, so
+    // a fiddled system clock cannot widen the window.
     //
-    // Untimed assignments (windowMinutes null — every existing one) skip this
+    // The student's start time is deliberately NOT read: the schedule is shared,
+    // so every student sitting this paper is judged against the same close time.
+    // Unscheduled assignments (both columns null — every existing one) skip this
     // entirely and behave exactly as before.
     const existing = await withRetry(() =>
       prisma.session.findUnique({
         where: { id: sessionId },
-        select: { id: true, status: true, createdAt: true, assignment: { select: { windowMinutes: true } } },
+        select: {
+          id: true,
+          status: true,
+          createdAt: true,
+          assignment: { select: { opensAt: true, closesAt: true } },
+        },
       })
     )
     if (existing?.status === 'IN_PROGRESS') {
       const now = Date.now()
-      const window = windowStatusFor(existing.assignment?.windowMinutes, existing.createdAt, now)
+      const window = windowStatusFor(existing.assignment?.opensAt, existing.assignment?.closesAt, now)
       if (!isSubmitAllowed(window)) {
+        if (window.state === 'pending') {
+          const until = minutesUntilOpen(window, now)
+          console.log(
+            `[SUBMIT] Session ${sessionId} REJECTED — window not open yet (${until} min away)`
+          )
+          res.status(403).json({
+            error: 'Submission window not open yet',
+            detail:
+              `This exam opens at ${new Date(window.opensAt!).toLocaleString()}` +
+              ` (${until} minute(s) away).`,
+            opensAt: window.opensAt,
+            closesAt: window.closesAt,
+          })
+          return
+        }
         const late = minutesLate(window, now)
         console.log(
-          `[SUBMIT] Session ${sessionId} REJECTED — submission window closed` +
-            ` (${window.windowMinutes} min window, ${late} min late)`
+          `[SUBMIT] Session ${sessionId} REJECTED — submission window closed (${late} min late)`
         )
         res.status(403).json({
           error: 'Submission window closed',
           detail:
-            `This ${window.windowMinutes}-minute session closed ` +
+            `This exam closed at ${new Date(window.closesAt!).toLocaleString()}, ` +
             `${late > 0 ? `${late} minute(s) ago` : 'just now'}. Contact your instructor.`,
           deadlineAt: window.deadlineAt,
+          closesAt: window.closesAt,
           windowMinutes: window.windowMinutes,
         })
         return
@@ -895,6 +951,14 @@ app.get(
       // this costs nothing. `taskCount` falls back to the forensics record and
       // then to 1, so legacy sessions with no assignment still read sensibly.
       assignmentTitle: session.assignment?.title ?? null,
+      // LIVE_LAB vs ASSESSMENT. The DVR gates the signals that carry no meaning
+      // on a take-home (tab-outs, compile count) on this. Falls back to the type
+      // recorded by the worker, then to null = show everything, which is the
+      // pre-existing behavior for a session with no recorded type.
+      assignmentType:
+        session.assignment?.type ??
+        (session.forensicsResults as { assignmentType?: string | null } | null)?.assignmentType ??
+        null,
       taskCount:
         session.assignment?.taskCount ??
         (session.forensicsResults as { taskCount?: number } | null)?.taskCount ??
@@ -1629,10 +1693,21 @@ app.post(
     // Multi-task exams (Prompt 1). Absent / unparseable → 1, i.e. exactly the
     // single-task exam this route has always created.
     const taskCount = Number.parseInt(req.body.taskCount, 10)
-    // Timed window (Feature 1). Absent / unparseable → NULL = untimed, which is
-    // what every assignment created before this feature is. The Zod schema has
-    // already bounded it; this only decides present-vs-absent.
-    const windowMinutes = Number.parseInt(req.body.windowMinutes, 10)
+    // ── Scheduled window (Feature 1, wall-clock) ──────────────────────────
+    // Absent / blank → NULL = unscheduled, which is what every assignment
+    // created before this feature is. The Zod schema has already rejected an
+    // unparseable date; this decides present-vs-absent and applies the one
+    // convenience: an opening instant plus a duration computes the close.
+    const parseWhen = (v: unknown): Date | null => {
+      if (typeof v !== 'string' || v.trim() === '') return null
+      const ms = Date.parse(v)
+      return Number.isFinite(ms) ? new Date(ms) : null
+    }
+    const windowMinutesIn = Number.parseInt(req.body.windowMinutes, 10)
+    const opensAt = parseWhen(req.body.opensAt)
+    const closesAt =
+      parseWhen(req.body.closesAt) ??
+      closesAtFrom(opensAt, Number.isFinite(windowMinutesIn) ? windowMinutesIn : null)
 
     const klass = await prisma.class.findUnique({ where: { id: classId } })
     if (!klass) {
@@ -1644,6 +1719,17 @@ app.post(
       return
     }
 
+    // Refused rather than silently ignored: an instructor who typed the times the
+    // wrong way round means to schedule something, and storing a window that can
+    // never be open would close the exam for a whole cohort.
+    if (opensAt && closesAt && closesAt.getTime() <= opensAt.getTime()) {
+      res.status(400).json({
+        error: 'Validation failed',
+        details: [{ field: 'closesAt', message: 'The closing time must be after the opening time.' }],
+      })
+      return
+    }
+
     const assignment = await prisma.assignment.create({
       data: {
         classId,
@@ -1651,15 +1737,22 @@ app.post(
         type,
         week: Number.isFinite(week) && week > 0 ? week : 1,
         taskCount: Number.isFinite(taskCount) && taskCount >= 1 && taskCount <= 6 ? taskCount : 1,
-        windowMinutes: Number.isFinite(windowMinutes) && windowMinutes > 0 ? windowMinutes : null,
+        opensAt,
+        closesAt,
+        // Stored for display only, and DERIVED from the schedule so it can never
+        // disagree with the instants that are actually enforced.
+        windowMinutes: windowMinutesBetween(opensAt, closesAt),
         assignmentPdfFilename: req.file?.filename ?? null,
       },
     })
     console.log(
       `[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week},` +
-        ` ${assignment.taskCount} task(s),` +
-        ` ${assignment.windowMinutes ? `${assignment.windowMinutes} min window` : 'untimed'})` +
-        ` in class ${classId}`
+        ` ${assignment.taskCount} task(s), ` +
+        (assignment.closesAt || assignment.opensAt
+          ? `scheduled ${assignment.opensAt?.toISOString() ?? 'any time'} → ` +
+            `${assignment.closesAt?.toISOString() ?? 'no close'}`
+          : 'unscheduled') +
+        `) in class ${classId}`
     )
     res.status(201).json(assignment)
   }
@@ -1933,9 +2026,17 @@ function taskSummary(taskId: string, t: TaskBundle) {
   }
 }
 
-function sessionSummary(s: SessionRow) {
+/**
+ * `assignmentTypeIn` is passed by routes that already loaded the assignment. It
+ * falls back to the type recorded on the forensics result, and to null when the
+ * session predates that. The client uses it to gate signals that carry no
+ * meaning on a take-home (tab-outs, compile count) — a DISPLAY decision; every
+ * metric is still computed and still stored.
+ */
+function sessionSummary(s: SessionRow, assignmentTypeIn?: string | null) {
   const fr = s.forensicsResults as
     | {
+        assignmentType?: string | null
         metricA?: { flag?: boolean }
         metricB?: { flag?: boolean; inconclusive?: boolean }
         metricC?: { flag?: boolean; inconclusive?: boolean; stats?: { cv?: number | null } }
@@ -1948,6 +2049,7 @@ function sessionSummary(s: SessionRow) {
           taskCount?: number
           flaggedTasks?: { taskId: string; label: string; metrics: string[] }[]
           reason?: string | null
+          excludedMetrics?: string[]
         }
       }
     | null
@@ -1955,6 +2057,7 @@ function sessionSummary(s: SessionRow) {
     id: s.id,
     studentId: s.studentId,
     status: s.status,
+    assignmentType: assignmentTypeIn ?? fr?.assignmentType ?? null,
     runCount: s.runCount ?? 0,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
@@ -1995,6 +2098,9 @@ function sessionSummary(s: SessionRow) {
                 taskCount: fr.merged.taskCount ?? fr.taskCount ?? 1,
                 flaggedTasks: fr.merged.flaggedTasks ?? [],
                 reason: fr.merged.reason ?? null,
+                // Metrics the merged signal deliberately ignored for this exam
+                // type (Metric A on a take-home). Stated, never silent.
+                excludedMetrics: fr.merged.excludedMetrics ?? [],
               }
             : null,
           // Per-task flags, in exam order. Empty for a legacy session with no
@@ -2033,7 +2139,7 @@ app.get(
       where: { assignmentId },
       orderBy: { updatedAt: 'desc' },
     })
-    res.json(sessions.map(sessionSummary))
+    res.json(sessions.map((s) => sessionSummary(s, assignment.type)))
   }
 )
 
@@ -2080,12 +2186,15 @@ app.get(
           sessions.find((s) => s.userId === m.user.id) ??
           sessions.find((s) => s.studentId === m.user.username) ??
           null
-        const summary = session ? sessionSummary(session) : null
+        const summary = session ? sessionSummary(session, assignment.type) : null
         return {
           userId: m.user.id,
           username: m.user.username,
           sessionId: session?.id ?? null,
           status: session?.status ?? 'NOT_STARTED',
+          // Lets the grid gate signals that mean nothing on a take-home, and it
+          // is the assignment's type, so NOT_STARTED tiles carry it too.
+          assignmentType: assignment.type,
           forensicsFlags: summary?.forensicsResults ?? null,
         }
       })
@@ -2115,11 +2224,11 @@ app.get(
     const sessions = await prisma.session.findMany({
       where: { assignment: { classId } },
       orderBy: { updatedAt: 'desc' },
-      include: { assignment: { select: { id: true, title: true } } },
+      include: { assignment: { select: { id: true, title: true, type: true } } },
     })
     res.json(
       sessions.map((s) => ({
-        ...sessionSummary(s),
+        ...sessionSummary(s, s.assignment?.type ?? null),
         assignmentId: s.assignment?.id ?? null,
         assignmentTitle: s.assignment?.title ?? null,
       }))

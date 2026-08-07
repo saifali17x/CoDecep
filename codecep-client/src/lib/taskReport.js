@@ -3,9 +3,20 @@
 // through exactly one normalization instead of drifting into two renderings.
 
 import { taskLabel } from "./workspace";
+import { shownMetricKeys } from "./metricLabels";
 
 /** The metrics a task can be flagged on, in the order the report shows them. */
 export const TASK_METRIC_KEYS = ["metricA", "metricB", "metricC", "authorship", "astAudit"];
+
+/**
+ * The metric columns this exam type shows. On a take-home ASSESSMENT the run
+ * count is dropped: over hours or days it measures the student's habits, not
+ * their authorship. Anything else (LIVE_LAB, unknown, absent) shows all five —
+ * the behavior that existed before this gate.
+ */
+export function taskMetricKeysFor(assignmentType) {
+  return shownMetricKeys(TASK_METRIC_KEYS, assignmentType);
+}
 
 /**
  * One row per task, from either shape the API produces:
@@ -58,7 +69,14 @@ export function normalizeTaskRows(tasks) {
     .sort((a, b) => a.taskId.localeCompare(b.taskId, undefined, { numeric: true }));
 }
 
-/** Which metrics of one normalized row carry a flag — drives the row emphasis. */
-export function flaggedMetricsOfRow(row) {
-  return TASK_METRIC_KEYS.filter((key) => row?.[key]?.flag === true);
+/**
+ * Which metrics of one normalized row carry a flag — drives the row emphasis.
+ *
+ * `assignmentType` excludes metrics that mean nothing for that exam type, so a
+ * take-home row is never marked "flagged for review" on the strength of a
+ * signal the report deliberately does not show. Mirrors the server's
+ * `flaggedMetricsOf`, which gates the stored merged signal the same way.
+ */
+export function flaggedMetricsOfRow(row, assignmentType) {
+  return taskMetricKeysFor(assignmentType).filter((key) => row?.[key]?.flag === true);
 }

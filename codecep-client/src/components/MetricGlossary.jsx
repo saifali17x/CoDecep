@@ -1,4 +1,10 @@
-import { METRIC_INFO, TIER1_INFO, REVIEW_FRAMING } from "../lib/metricLabels";
+import {
+  METRIC_INFO,
+  TIER1_INFO,
+  REVIEW_FRAMING,
+  isMetricShownFor,
+  isTier1ShownFor,
+} from "../lib/metricLabels";
 import "./MetricGlossary.css";
 
 // ── "What these columns check" (UI polish part 1) ────────────────────────────
@@ -11,8 +17,20 @@ import "./MetricGlossary.css";
 //
 // Everything here comes from lib/metricLabels.js. Nothing is written twice, so
 // the glossary and the pills it explains can never drift apart.
-export default function MetricGlossary({ keys, includeTier1 = false, open = false }) {
-  const shown = (keys ?? Object.keys(METRIC_INFO)).filter((k) => METRIC_INFO[k]);
+export default function MetricGlossary({
+  keys,
+  includeTier1 = false,
+  open = false,
+  // LIVE_LAB vs ASSESSMENT: the glossary must not explain a signal the report
+  // above it deliberately does not show. Absent/unknown explains everything.
+  assignmentType = null,
+}) {
+  const shown = (keys ?? Object.keys(METRIC_INFO)).filter(
+    (k) => METRIC_INFO[k] && isMetricShownFor(k, assignmentType),
+  );
+  const tier1Shown = Object.entries(TIER1_INFO).filter(([k]) =>
+    isTier1ShownFor(k, assignmentType),
+  );
   if (shown.length === 0 && !includeTier1) return null;
 
   return (
@@ -32,7 +50,7 @@ export default function MetricGlossary({ keys, includeTier1 = false, open = fals
           );
         })}
         {includeTier1 &&
-          Object.entries(TIER1_INFO).map(([key, info]) => (
+          tier1Shown.map(([key, info]) => (
             <div className="metric-glossary-item" key={key}>
               <dt>
                 {info.plain}

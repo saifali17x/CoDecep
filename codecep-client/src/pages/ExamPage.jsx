@@ -79,9 +79,15 @@ export default function ExamPage() {
         if (cancelled) return;
         setRestore(restored);
         setExamWindow(
+          // The deadline is the assignment's scheduled CLOSE — a wall-clock
+          // instant shared by every student, not this student's own start plus
+          // a duration. Absent → unscheduled, and the exam strip is unchanged.
           typeof created.deadlineAt === "number"
             ? {
                 deadlineAt: created.deadlineAt,
+                closesAt: created.closesAt,
+                opensAt: created.opensAt,
+                windowState: created.windowState,
                 serverNow: created.serverNow,
                 windowMinutes: created.windowMinutes,
               }

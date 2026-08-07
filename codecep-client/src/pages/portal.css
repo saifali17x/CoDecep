@@ -129,6 +129,16 @@
 }
 .link-btn:hover { text-decoration: underline; }
 
+/* An in-progress session's replay entry. Deliberately reads as a disabled
+   state — muted, not a link, no hover affordance — so it is obvious that the
+   replay is not available yet rather than that a click failed. */
+.replay-unavailable {
+  color: var(--text-muted, #9aa4b2);
+  cursor: default;
+  font-size: var(--fs-sm);
+  font-style: italic;
+}
+
 .form-error {
   color: var(--danger);
   font-size: var(--fs-sm);

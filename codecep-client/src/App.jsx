@@ -465,16 +465,24 @@ function App({
           method: "POST",
         });
         const data = await res.json();
-        // Timed window (Feature 1): the SERVER refused this submission because
-        // the window had closed. It stays refused — the client has no say — so
-        // the student is told plainly rather than shown a success banner for a
-        // submission that did not happen. The Immune Phase above has already
-        // disarmed, which is correct either way: the exam is over for them,
-        // and their work is in the database up to the final flush.
-        if (res.status === 403 && data?.error === "Submission window closed") {
-          setWindowClosed(data.detail ?? "The submission window for this session has closed.");
+        // Scheduled window (Feature 1): the SERVER refused this submission —
+        // either the scheduled close has passed or the exam has not opened yet.
+        // It stays refused — the client has no say — so the student is told
+        // plainly rather than shown a success banner for a submission that did
+        // not happen. The Immune Phase above has already disarmed, which is
+        // correct either way: the exam is over for them, and their work is in
+        // the database up to the final flush.
+        if (
+          res.status === 403 &&
+          (data?.error === "Submission window closed" ||
+            data?.error === "Submission window not open yet")
+        ) {
+          setWindowClosed(
+            `${data.error}. ${data.detail ?? ""}`.trim() ||
+              "The submission window for this exam is not open.",
+          );
           setSubmitOutcome(null);
-          console.warn("[SUBMIT] rejected — submission window closed");
+          console.warn(`[SUBMIT] rejected — ${data.error}`);
         } else if (data?.status === "ALREADY_SUBMITTED") {
           // Distinguish a real submission from an idempotency hit so the
           // student never thinks a fresh submission happened when it didn't.
@@ -813,7 +821,7 @@ function App({
       />
       {windowClosed && (
         <div className="submit-banner already" role="alert">
-          ⏱ Submission window closed — the server did not accept this submission. {windowClosed}
+          ⏱ The server did not accept this submission. {windowClosed}
         </div>
       )}
       {!isSubmitted && restoreNotice !== null && (

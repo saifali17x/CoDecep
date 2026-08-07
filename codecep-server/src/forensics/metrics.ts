@@ -233,11 +233,62 @@ export function runCountForTask(
 export const FLAGGABLE_METRICS = ['metricA', 'metricB', 'metricC', 'authorship', 'astAudit'] as const
 export type FlaggableMetric = (typeof FLAGGABLE_METRICS)[number]
 
-/** Which of a result bundle's metrics carry `flag: true`. */
-export function flaggedMetricsOf(bundle: unknown): FlaggableMetric[] {
+// ── Which signals MEAN anything, per exam type ─────────────────────────────
+// A LIVE_LAB is proctored and sat in one continuous sitting, so the full
+// behavioral suite reads sensibly: leaving the exam screen is notable, and a
+// program compiled once in a two-hour lab is worth a look.
+//
+// An ASSESSMENT is a take-home done over hours or days. Both of those signals
+// stop being signals there. Of course the student left the screen — they ate
+// dinner. Of course the compile count is whatever it is — there was no sitting
+// to compare it against. Metric A on a take-home measures nothing but the
+// student's habits, so it is neither shown NOR allowed to drive the merged
+// review flag: a flag an instructor is told to ignore is worse than no flag,
+// because it trains them to ignore the ones that matter.
+//
+// The signals that DO survive a take-home are the ones about how the code came
+// into existence rather than when: authorship, linear injection, robotic
+// variance, and the construct audit.
+export type AssignmentType = 'LIVE_LAB' | 'ASSESSMENT'
+
+/** Metrics that carry no meaning on a take-home and are gated out of ASSESSMENT. */
+export const METRICS_HIDDEN_FOR_ASSESSMENT: readonly FlaggableMetric[] = ['metricA']
+
+/**
+ * Is this metric meaningful for this exam type? Unknown/absent types are treated
+ * as LIVE_LAB, i.e. show everything — the pre-existing behavior, so a session
+ * with no recorded type never silently loses a signal.
+ */
+export function isMetricRelevantFor(
+  metric: FlaggableMetric,
+  assignmentType: string | null | undefined,
+): boolean {
+  if (assignmentType !== 'ASSESSMENT') return true
+  return !METRICS_HIDDEN_FOR_ASSESSMENT.includes(metric)
+}
+
+/** The flaggable metrics that mean something for this exam type. */
+export function relevantFlaggableMetrics(
+  assignmentType: string | null | undefined,
+): FlaggableMetric[] {
+  return FLAGGABLE_METRICS.filter((m) => isMetricRelevantFor(m, assignmentType))
+}
+
+/**
+ * Which of a result bundle's metrics carry `flag: true`.
+ *
+ * `assignmentType` filters out metrics that are meaningless for that exam type
+ * (see above). The metrics are still COMPUTED and still stored — only their
+ * contribution to the review signal is withheld, so nothing is lost from the
+ * record and a session can be re-read under a different lens later.
+ */
+export function flaggedMetricsOf(
+  bundle: unknown,
+  assignmentType?: string | null,
+): FlaggableMetric[] {
   if (!bundle || typeof bundle !== 'object') return []
   const b = bundle as Record<string, { flag?: unknown } | undefined>
-  return FLAGGABLE_METRICS.filter((key) => b[key]?.flag === true)
+  return relevantFlaggableMetrics(assignmentType).filter((key) => b[key]?.flag === true)
 }
 
 export type MergedReview = {
@@ -249,6 +300,10 @@ export type MergedReview = {
   flaggedTasks: { taskId: string; label: string; metrics: FlaggableMetric[] }[]
   /** Metrics flagged by the session-wide computation itself. */
   sessionFlaggedMetrics: FlaggableMetric[]
+  /** The exam type this signal was computed under; null when unrecorded. */
+  assignmentType: string | null
+  /** Metrics excluded as meaningless for this exam type — stated, never silent. */
+  excludedMetrics: FlaggableMetric[]
   reason: string | null
 }
 
@@ -256,6 +311,7 @@ export function computeMergedReview(
   tasks: Record<string, unknown>,
   sessionLevel: unknown,
   taskCount: number,
+  assignmentType?: string | null,
 ): MergedReview {
   const flaggedTasks = Object.entries(tasks)
     .map(([taskId, bundle]) => ({
@@ -264,12 +320,13 @@ export function computeMergedReview(
         (bundle as { label?: unknown })?.label && typeof (bundle as { label?: unknown }).label === 'string'
           ? ((bundle as { label: string }).label)
           : taskLabel(taskId),
-      metrics: flaggedMetricsOf(bundle),
+      metrics: flaggedMetricsOf(bundle, assignmentType),
     }))
     .filter((t) => t.metrics.length > 0)
     .sort((a, b) => compareTaskIds(a.taskId, b.taskId))
 
-  const sessionFlaggedMetrics = flaggedMetricsOf(sessionLevel)
+  const sessionFlaggedMetrics = flaggedMetricsOf(sessionLevel, assignmentType)
+  const excludedMetrics = FLAGGABLE_METRICS.filter((m) => !isMetricRelevantFor(m, assignmentType))
   const flag = flaggedTasks.length > 0 || sessionFlaggedMetrics.length > 0
 
   return {
@@ -279,6 +336,8 @@ export function computeMergedReview(
     flaggedTaskCount: flaggedTasks.length,
     flaggedTasks,
     sessionFlaggedMetrics,
+    assignmentType: assignmentType ?? null,
+    excludedMetrics,
     reason: flag
       ? flaggedTasks.length > 0
         ? `${flaggedTasks.length} of ${taskCount} task(s) flagged for instructor review (${flaggedTasks

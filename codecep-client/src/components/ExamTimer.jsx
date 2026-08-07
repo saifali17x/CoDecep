@@ -4,10 +4,14 @@ import "./ExamTimer.css";
 // ── Timed submission window — the countdown (Feature 1) ─────────────────────
 //
 // DISPLAY ONLY. The server decides whether a submission is accepted, using its
-// own clock against its own record of when the student started; this component
+// own clock against the assignment's SCHEDULED closing instant; this component
 // cannot widen that window, and nothing it renders is sent anywhere. If this
 // file were deleted the enforcement would be unchanged — the student would just
 // not know how long they had left.
+//
+// The deadline is WALL-CLOCK and shared by the whole cohort, so this counts down
+// to the same instant on every student's screen. A student who opened the paper
+// late simply sees less time, which is the point.
 //
 // Two details make it honest rather than decorative:
 //
@@ -80,7 +84,7 @@ export default function ExamTimer({ deadlineAt, serverNow, onExpire, isSubmitted
       title={
         isSubmitted
           ? "Submitted."
-          : "Time left in this session. Your instructor's deadline is enforced by the server."
+          : "Time left until this exam closes. The closing time is the same for everyone and is enforced by the server."
       }
     >
       <span className="exam-timer-label">

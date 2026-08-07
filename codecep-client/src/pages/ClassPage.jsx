@@ -8,7 +8,12 @@ import SyllabusManager from "../components/SyllabusManager";
 import NetworkPanel from "../components/NetworkPanel";
 import TaskReport from "../components/TaskReport";
 import MetricGlossary from "../components/MetricGlossary";
-import { METRIC_INFO, describeMetric } from "../lib/metricLabels";
+import {
+  METRIC_INFO,
+  describeMetric,
+  isTakeHome,
+  ASSESSMENT_GATE_NOTE,
+} from "../lib/metricLabels";
 import {
   metricASeverity,
   metricBSeverity,
@@ -16,6 +21,7 @@ import {
   authorshipSeverity,
   inconclusiveSeverity,
   mergedSeverity,
+  formatTypedRatio,
   LEVEL_COLORS,
 } from "../lib/metricColors";
 import "./portal.css";
@@ -88,9 +94,14 @@ export default function ClassPage() {
   // Multi-task exams (Prompt 1): how many questions this exam has. 1 is the
   // single-task exam this form has always created.
   const [taskCount, setTaskCount] = useState(1);
-  // Timed submission window (Feature 1). Empty = untimed, which is how every
-  // assignment behaved before this existed. The window runs from when each
-  // STUDENT starts, not from a wall-clock time — see the schema comment.
+  // Scheduled submission window (Feature 1, wall-clock). Empty = unscheduled,
+  // which is how every assignment behaved before this existed. These are
+  // absolute instants SHARED by every student — the sitting opens and closes at
+  // the same moment for the whole cohort, not N minutes after each student
+  // happens to start. `windowMinutes` is a convenience only: with an opening
+  // time and no closing time, it computes the close.
+  const [opensAt, setOpensAt] = useState("");
+  const [closesAt, setClosesAt] = useState("");
   const [windowMinutes, setWindowMinutes] = useState("");
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -138,7 +149,20 @@ export default function ClassPage() {
       fd.append("type", type);
       fd.append("week", String(week));
       fd.append("taskCount", String(taskCount));
-      // Only sent when set: an empty field must mean "untimed", never 0.
+      // Only sent when set: an empty field must mean "unscheduled", never 0 or
+      // the epoch. A <input type="datetime-local"> yields a local wall-clock
+      // string with no zone, so it is converted to an absolute ISO instant HERE
+      // — the instructor's browser knows their timezone and the server does not.
+      const toIso = (local) => {
+        const t = String(local).trim();
+        if (t === "") return "";
+        const ms = Date.parse(t);
+        return Number.isFinite(ms) ? new Date(ms).toISOString() : "";
+      };
+      const opensIso = toIso(opensAt);
+      const closesIso = toIso(closesAt);
+      if (opensIso) fd.append("opensAt", opensIso);
+      if (closesIso) fd.append("closesAt", closesIso);
       if (String(windowMinutes).trim() !== "") {
         fd.append("windowMinutes", String(windowMinutes).trim());
       }
@@ -153,6 +177,8 @@ export default function ClassPage() {
       setTitle("");
       setWeek(1);
       setTaskCount(1);
+      setOpensAt("");
+      setClosesAt("");
       setWindowMinutes("");
       setFile(null);
       await load();
@@ -274,7 +300,25 @@ export default function ClassPage() {
                 />
               </div>
               <div className="field">
-                <label htmlFor="a-window">Time limit (min)</label>
+                <label htmlFor="a-opens">Opens at</label>
+                <input
+                  id="a-opens"
+                  type="datetime-local"
+                  value={opensAt}
+                  onChange={(e) => setOpensAt(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="a-closes">Closes at</label>
+                <input
+                  id="a-closes"
+                  type="datetime-local"
+                  value={closesAt}
+                  onChange={(e) => setClosesAt(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="a-window">or duration (min)</label>
                 <input
                   id="a-window"
                   type="number"
@@ -282,7 +326,9 @@ export default function ClassPage() {
                   placeholder="none"
                   value={windowMinutes}
                   onChange={(e) => setWindowMinutes(e.target.value)}
-                  style={{ width: 90 }}
+                  style={{ width: 110 }}
+                  disabled={String(closesAt).trim() !== ""}
+                  title="Used only when 'Closes at' is blank: the close time is the opening time plus this many minutes."
                 />
               </div>
               <div className="field">
@@ -302,9 +348,13 @@ export default function ClassPage() {
               questions the exam has — each gets its own file workspace and is compiled and run
               separately, but one PDF covers them all and the student submits once.
               <br />
-              <strong>Time limit</strong> is optional and runs from when each student STARTS
-              (leave empty for no limit). Students see a countdown, but the deadline is
-              enforced on the server — a late submission is refused whatever their clock says.
+              <strong>Opens at / Closes at</strong> schedule the sitting and are optional
+              (leave both blank for no limit). They are <strong>wall-clock times shared by
+              every student</strong>: the exam closes at the same moment for the whole class,
+              so a student who starts late has less time, not a later deadline. Fill{" "}
+              <strong>duration</strong> instead of a closing time to close that many minutes
+              after it opens. Students see a countdown, but the schedule is enforced on the
+              server — a late submission is refused whatever their clock says.
             </p>
           </div>
         )}
@@ -371,8 +421,12 @@ export default function ClassPage() {
                                 <tr>
                                   <th>Student</th>
                                   <th>Status</th>
-                                  <th>Runs</th>
-                                  <MetricTh metricKey="metricA" />
+                                  {/* A take-home ASSESSMENT drops the run count
+                                      entirely: over hours or days it measures
+                                      the student's habits, not their
+                                      authorship. LIVE_LAB is unchanged. */}
+                                  {!isTakeHome(a.type) && <th>Runs</th>}
+                                  {!isTakeHome(a.type) && <MetricTh metricKey="metricA" />}
                                   <MetricTh metricKey="metricB" />
                                   <MetricTh metricKey="metricC" />
                                   <MetricTh metricKey="authorship" />
@@ -396,18 +450,20 @@ export default function ClassPage() {
                                         {s.status}
                                       </span>
                                     </td>
-                                    <td>{s.runCount}</td>
-                                    <td>
-                                      {s.forensicsResults ? (
-                                        <SeverityCell
-                                          metricKey="metricA"
-                                          sev={metricASeverity(s.runCount)}
-                                          short={`${s.runCount} run${s.runCount === 1 ? "" : "s"}`}
-                                        />
-                                      ) : (
-                                        <SeverityCell sev={PENDING_SEV} short="—" />
-                                      )}
-                                    </td>
+                                    {!isTakeHome(a.type) && <td>{s.runCount}</td>}
+                                    {!isTakeHome(a.type) && (
+                                      <td>
+                                        {s.forensicsResults ? (
+                                          <SeverityCell
+                                            metricKey="metricA"
+                                            sev={metricASeverity(s.runCount)}
+                                            short={`${s.runCount} run${s.runCount === 1 ? "" : "s"}`}
+                                          />
+                                        ) : (
+                                          <SeverityCell sev={PENDING_SEV} short="—" />
+                                        )}
+                                      </td>
+                                    )}
                                     <td>
                                       {s.forensicsResults ? (
                                         <SeverityCell
@@ -458,12 +514,14 @@ export default function ClassPage() {
                                             s.forensicsResults.authorship.flag,
                                             s.forensicsResults.authorship.typedRatio,
                                           )}
+                                          // Capped at 100% for display (see
+                                          // formatTypedRatio) — the stored
+                                          // ratio and the flag are unchanged.
                                           short={
-                                            s.forensicsResults.authorship.typedRatio != null
-                                              ? `${Math.round(s.forensicsResults.authorship.typedRatio * 100)}% typed`
-                                              : s.forensicsResults.authorship.flag
-                                                ? "pasted"
-                                                : "ok"
+                                            formatTypedRatio(
+                                              s.forensicsResults.authorship.typedRatio,
+                                            ) ??
+                                            (s.forensicsResults.authorship.flag ? "pasted" : "ok")
                                           }
                                         />
                                       ) : (
@@ -522,20 +580,41 @@ export default function ClassPage() {
                                     </td>
                                     <td>{s.status === "SUBMITTED" ? fmtTime(s.updatedAt) : "—"}</td>
                                     <td>
-                                      <button
-                                        className="link-btn"
-                                        onClick={() => {
-                                          setReplayTaskId(null);
-                                          setReplaySessionId(s.id);
-                                        }}
-                                      >
-                                        Replay
-                                      </button>
+                                      {/* Recorded replay is a POST-SUBMISSION
+                                          artifact: the reconstruction is built
+                                          from the flushed record plus the
+                                          forensics the worker computes at
+                                          submit, so opening it mid-exam showed
+                                          a half-written session and a line
+                                          about database flushes that meant
+                                          nothing to an instructor. It is now
+                                          plainly unavailable until submission.
+                                          (Watching a student type RIGHT NOW is
+                                          the live DVR on the monitoring grid —
+                                          a different feature, unaffected.) */}
+                                      {s.status === "SUBMITTED" ? (
+                                        <button
+                                          className="link-btn"
+                                          onClick={() => {
+                                            setReplayTaskId(null);
+                                            setReplaySessionId(s.id);
+                                          }}
+                                        >
+                                          Replay
+                                        </button>
+                                      ) : (
+                                        <span
+                                          className="replay-unavailable"
+                                          title="The recorded replay is built when the student submits. To watch this student typing right now, use the live monitoring dashboard."
+                                        >
+                                          Replay available after the student submits
+                                        </span>
+                                      )}
                                     </td>
                                   </tr>,
                                   isMulti && tasksForSession === s.id && (
                                     <tr key={`${s.id}-tasks`} className="sessions-row">
-                                      <td colSpan={11}>
+                                      <td colSpan={isTakeHome(a.type) ? 9 : 11}>
                                         <TaskReport
                                           tasks={taskRows}
                                           merged={s.forensicsResults?.merged}
@@ -547,6 +626,7 @@ export default function ClassPage() {
                                             setReplayTaskId(taskId);
                                             setReplaySessionId(s.id);
                                           }}
+                                          assignmentType={a.type}
                                         />
                                       </td>
                                     </tr>
@@ -558,9 +638,13 @@ export default function ClassPage() {
                           )}
                           {/* The columns above are abbreviated to fit; this is
                               where each one says in full what it checks. */}
+                          {sessions && sessions.length > 0 && isTakeHome(a.type) && (
+                            <p className="field-hint">{ASSESSMENT_GATE_NOTE}</p>
+                          )}
                           {sessions && sessions.length > 0 && (
                             <MetricGlossary
                               keys={["metricA", "metricB", "metricC", "authorship", "merged"]}
+                              assignmentType={a.type}
                             />
                           )}
                         </td>

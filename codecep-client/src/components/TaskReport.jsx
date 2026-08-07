@@ -1,7 +1,7 @@
-import { normalizeTaskRows, flaggedMetricsOfRow, TASK_METRIC_KEYS } from "../lib/taskReport";
+import { normalizeTaskRows, flaggedMetricsOfRow, taskMetricKeysFor } from "../lib/taskReport";
 import MetricReviewControl from "./MetricReviewControl";
 import { BEHAVIORAL_METRICS, predictedFlagOfRow, judgmentKey } from "../lib/metricReviewMeta";
-import { METRIC_INFO, describeMetric } from "../lib/metricLabels";
+import { METRIC_INFO, describeMetric, isTakeHome, ASSESSMENT_GATE_NOTE } from "../lib/metricLabels";
 import MetricGlossary from "./MetricGlossary";
 import {
   metricASeverity,
@@ -11,6 +11,7 @@ import {
   inconclusiveSeverity,
   astAuditSeverity,
   mergedSeverity,
+  formatTypedRatio,
   LEVEL_COLORS,
 } from "../lib/metricColors";
 import "./TaskReport.css";
@@ -109,12 +110,11 @@ function severityOf(row, key) {
     const sev = authorshipSeverity(row.authorship.flag, row.authorship.typedRatio);
     return {
       sev: { ...sev, label: row.authorship.reason ?? sev.label },
+      // Displayed share is capped at 100% (see formatTypedRatio): a ratio over
+      // 1.0 is honest arithmetic but reads as a bug. Verdict is unchanged.
       short:
-        row.authorship.typedRatio != null
-          ? `${Math.round(row.authorship.typedRatio * 100)}% typed`
-          : row.authorship.flag
-            ? "pasted"
-            : "ok",
+        formatTypedRatio(row.authorship.typedRatio) ??
+        (row.authorship.flag ? "pasted" : "ok"),
     };
   }
   const sev = astAuditSeverity(row.astAudit.flag, row.astAudit.violationCount);
@@ -166,9 +166,16 @@ export default function TaskReport({
   sessionId = null,
   judgments = {},
   onJudged,
+  // LIVE_LAB vs ASSESSMENT. On a take-home the run-count column is dropped —
+  // over hours or days it says nothing about authorship. Absent/unknown shows
+  // every column, exactly as this table did before the gate existed.
+  assignmentType = null,
 }) {
   const rows = normalizeTaskRows(tasks);
   if (rows.length === 0) return null;
+
+  const metricKeys = taskMetricKeysFor(assignmentType);
+  const gated = isTakeHome(assignmentType);
 
   const flaggedIds = new Set(
     (merged?.flaggedTasks ?? []).map((t) => t.taskId).filter(Boolean),
@@ -188,7 +195,7 @@ export default function TaskReport({
           <thead>
             <tr>
               <th>Task</th>
-              {TASK_METRIC_KEYS.map((key) => (
+              {metricKeys.map((key) => (
                 <MetricHeader key={key} metricKey={key} />
               ))}
               {onReplayTask && <th></th>}
@@ -196,7 +203,8 @@ export default function TaskReport({
           </thead>
           <tbody>
             {rows.map((row) => {
-              const flagged = flaggedMetricsOfRow(row).length > 0 || flaggedIds.has(row.taskId);
+              const flagged =
+                flaggedMetricsOfRow(row, assignmentType).length > 0 || flaggedIds.has(row.taskId);
               return (
                 <tr
                   key={row.taskId}
@@ -212,7 +220,7 @@ export default function TaskReport({
                       </span>
                     )}
                   </td>
-                  {TASK_METRIC_KEYS.map((key) => {
+                  {metricKeys.map((key) => {
                     const { sev, short } = severityOf(row, key);
                     // The review control appears only beside BEHAVIORAL metrics.
                     // `astAudit` is a parse result — a factual record, not an
@@ -251,7 +259,7 @@ export default function TaskReport({
 
       {/* The column headers are plain-language and short; this is where the
           full sentence for each of them lives, without needing a hover. */}
-      <MetricGlossary keys={[...TASK_METRIC_KEYS, "merged"]} />
+      <MetricGlossary keys={[...metricKeys, "merged"]} />
 
       {sessionId && (
         <p className="metric-review-note">
@@ -262,6 +270,9 @@ export default function TaskReport({
           records, so they carry no judgment.
         </p>
       )}
+      {/* A silently shorter report is indistinguishable from a broken one, so
+          the gate says what it dropped and why. */}
+      {gated && <p className="task-report-note">{ASSESSMENT_GATE_NOTE}</p>}
       <p className="task-report-note">
         Each task is a separate program and is assessed on its own data. The
         session indicator is <strong>any task flagged</strong>, never an average —

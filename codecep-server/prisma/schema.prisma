@@ -138,20 +138,29 @@ model Assignment {
   // structural fact that has to outlive a session.
   taskCount Int @default(1)
 
-  // Timed submission window (Feature 1) — minutes the student gets from when
-  // THEY start, not a wall-clock deadline. NULL = untimed, which is every
-  // existing assignment, so nothing already in the database changes behavior.
+  // ── Scheduled submission window (Feature 1, wall-clock) ───────────────────
+  // The instructor SCHEDULES the exam: "opens 09:00, closes 12:00". Both are
+  // absolute instants and the window is IDENTICAL for every student, whenever
+  // each one happens to open the paper. NULL = unscheduled/untimed, which is
+  // every assignment created before this feature, so nothing already in the
+  // database changes behavior.
   //
-  // SESSION-RELATIVE was chosen over a fixed wall-clock window (`opensAt` +
-  // duration) deliberately: a lab is "you have 3 hours from when you sit down",
-  // students trickle in, and the session row ALREADY records when each one
-  // started (`sessions.createdAt`). A wall-clock model would need a second
-  // column, a scheduling UI, and a policy for a student who arrives late — all
-  // to express something this course does not need. The deadline is therefore
-  // derived, never stored: `session.createdAt + windowMinutes`.
+  // This REPLACES a session-relative model (deadline = `session.createdAt +
+  // windowMinutes`), which gave every student a private deadline: two students
+  // sitting the same paper closed at different times, and a student who arrived
+  // late could still be typing long after the sitting had ended. A scheduled
+  // exam is a wall-clock fact about the room, not a per-student stopwatch.
   //
-  // Enforcement is SERVER-SIDE on submit, using SERVER time. The exam UI's
-  // countdown is display convenience only and can never widen the window.
+  // Enforcement is SERVER-SIDE on submit, on the SERVER's clock, against these
+  // two columns only. The exam UI's countdown is display convenience and can
+  // never widen the window.
+  opensAt  DateTime?
+  closesAt DateTime?
+
+  // Kept only as the instructor-UI CONVENIENCE (enter an open time plus a
+  // duration, get a close time) and for display. It is DERIVED from the
+  // schedule — `closesAt - opensAt` — and is never an enforcement input. It is
+  // no longer session-relative and must not be reinterpreted as such.
   windowMinutes Int?
 
   // The TASK/QUESTION document students read in the exam split-pane.

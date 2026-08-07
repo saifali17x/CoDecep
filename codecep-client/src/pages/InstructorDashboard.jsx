@@ -7,7 +7,13 @@ import MetricGlossary from "../components/MetricGlossary";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import { debugLog } from "../debug";
-import { alertTypeInfo, alertPlainName } from "../lib/metricLabels";
+import {
+  alertTypeInfo,
+  alertPlainName,
+  isAlertTypeShownFor,
+  isTakeHome,
+  ASSESSMENT_GATE_NOTE,
+} from "../lib/metricLabels";
 import "../components/Dashboard.css"; // .dash-status / .dash-table / .session-link
 import "./MonitorGrid.css";
 
@@ -57,6 +63,23 @@ export default function InstructorDashboard() {
     rosterNamesRef.current = new Set((roster ?? []).map((r) => r.username));
   }, [roster]);
 
+  // LIVE_LAB vs ASSESSMENT for the selected exam. On a take-home, a tab-out is
+  // a student getting a coffee, so it is not surfaced here at all — the alert
+  // is still relayed and still recorded, but a dashboard that lights up for
+  // three days of ordinary life trains an instructor to ignore it. Preferred
+  // from the roster (authoritative, and present even with no sessions yet),
+  // falling back to the selector list.
+  const assignmentType =
+    roster?.[0]?.assignmentType ??
+    assignments.find((a) => a.id === assignmentId)?.type ??
+    null;
+  // The socket handler is registered once; a ref keeps it reading the CURRENT
+  // exam type without tearing the subscription down on every change.
+  const assignmentTypeRef = useRef(assignmentType);
+  useEffect(() => {
+    assignmentTypeRef.current = assignmentType;
+  }, [assignmentType]);
+
   // ── Assignment selector data: all of this instructor's assignments ────────
   useEffect(() => {
     let cancelled = false;
@@ -66,7 +89,12 @@ export default function InstructorDashboard() {
         const lists = await Promise.all(
           classes.map((c) =>
             apiFetch(`/api/classes/${c.id}/assignments`, { token }).then((as) =>
-              (as ?? []).map((a) => ({ id: a.id, title: a.title, className: c.name }))
+              (as ?? []).map((a) => ({
+                id: a.id,
+                title: a.title,
+                type: a.type,
+                className: c.name,
+              }))
             )
           )
         );
@@ -109,6 +137,9 @@ export default function InstructorDashboard() {
     const onDisconnect = () => setConnected(false);
     const onAlert = (payload) => {
       debugLog("[RECV]", payload.type, payload);
+      // Gated for a take-home before it reaches ANY of this screen's state, so
+      // a suppressed event cannot colour a tile, bump a counter or fill the log.
+      if (!isAlertTypeShownFor(payload.type, assignmentTypeRef.current)) return;
       setAlerts((prev) => [payload, ...prev].slice(0, 200));
       // Grid update only for students on the current roster.
       if (!rosterNamesRef.current.has(payload.studentId)) return;
@@ -194,6 +225,12 @@ export default function InstructorDashboard() {
           <p className="form-error">
             {rosterError} <button className="link-btn" onClick={loadRoster}>Retry</button>
           </p>
+        )}
+
+        {/* A dashboard that quietly shows fewer kinds of alert is
+            indistinguishable from one that is broken, so it says so. */}
+        {assignmentId && isTakeHome(assignmentType) && (
+          <p className="empty-note">{ASSESSMENT_GATE_NOTE}</p>
         )}
 
         {!assignmentId ? (
@@ -306,7 +343,7 @@ export default function InstructorDashboard() {
           {/* What each live event actually means, in the same words the DVR
               and the reports use. Tier-1 events only — no metric is computed
               here; this screen shows what fired, not what was inferred. */}
-          <MetricGlossary keys={[]} includeTier1 />
+          <MetricGlossary keys={[]} includeTier1 assignmentType={assignmentType} />
         </details>
       </div>
     </AppShell>
