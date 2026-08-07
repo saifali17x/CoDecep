@@ -1,4 +1,6 @@
 import { normalizeTaskRows, flaggedMetricsOfRow, TASK_METRIC_KEYS } from "../lib/taskReport";
+import MetricReviewControl from "./MetricReviewControl";
+import { BEHAVIORAL_METRICS, predictedFlagOfRow, judgmentKey } from "../lib/metricReviewMeta";
 import {
   metricASeverity,
   metricBSeverity,
@@ -125,7 +127,19 @@ export function MergedFlagPill({ merged, taskCount }) {
  * Per-task breakdown table. `onReplayTask` (optional) turns each row into a
  * one-click jump into that task's replay.
  */
-export default function TaskReport({ tasks, merged, taskCount, selectedTaskId, onReplayTask }) {
+export default function TaskReport({
+  tasks,
+  merged,
+  taskCount,
+  selectedTaskId,
+  onReplayTask,
+  // Feature 3 — optional accuracy review. Absent (the ClassPage table before an
+  // instructor opens a report, and every student-facing path) renders exactly
+  // the report that existed before, with no controls at all.
+  sessionId = null,
+  judgments = {},
+  onJudged,
+}) {
   const rows = normalizeTaskRows(tasks);
   if (rows.length === 0) return null;
 
@@ -175,9 +189,24 @@ export default function TaskReport({ tasks, merged, taskCount, selectedTaskId, o
                   </td>
                   {TASK_METRIC_KEYS.map((key) => {
                     const { sev, short } = severityOf(row, key);
+                    // The review control appears only beside BEHAVIORAL metrics.
+                    // `astAudit` is a parse result — a factual record, not an
+                    // assessment — so it carries no judgment, matching the
+                    // server, which rejects one.
+                    const reviewable = sessionId && BEHAVIORAL_METRICS.includes(key);
                     return (
                       <td key={key}>
                         <Cell sev={sev} short={short} />
+                        {reviewable && (
+                          <MetricReviewControl
+                            sessionId={sessionId}
+                            taskId={row.taskId}
+                            metric={key}
+                            predictedFlag={predictedFlagOfRow(row, key)}
+                            initialJudgment={judgments[judgmentKey(row.taskId, key)] ?? null}
+                            onSaved={onJudged}
+                          />
+                        )}
                       </td>
                     );
                   })}
@@ -195,6 +224,15 @@ export default function TaskReport({ tasks, merged, taskCount, selectedTaskId, o
         </table>
       </div>
 
+      {sessionId && (
+        <p className="metric-review-note">
+          👍/👎 beside a behavioral metric is optional and records whether YOU think that
+          assessment was accurate. It is collected only to tune these thresholds manually
+          later — nothing is retuned automatically, and no judgment changes this or any
+          other student's result. Tab-outs, pastes and construct checks are factual
+          records, so they carry no judgment.
+        </p>
+      )}
       <p className="task-report-note">
         Each task is a separate program and is assessed on its own data. The
         session indicator is <strong>any task flagged</strong>, never an average —

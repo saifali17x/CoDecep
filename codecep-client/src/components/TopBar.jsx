@@ -15,6 +15,10 @@ export default function TopBar({
   onBack,
   title,
   labMode,
+  // Timed submission window (Feature 1) — the countdown, passed in as a node so
+  // this strip stays a layout component and knows nothing about deadlines.
+  // Absent on untimed assignments, which render exactly as they always did.
+  timer = null,
 }) {
   return (
     <header className="top-bar">
@@ -29,6 +33,7 @@ export default function TopBar({
         {labMode && <span className={`top-bar-mode ${labMode}`}>{labMode}</span>}
       </div>
       <div className="top-bar-actions">
+        {timer}
         <span className="lang-label" title="This exam runs C++ only">C++</span>
         <button className="btn btn-run" onClick={onRun} disabled={isRunning || isSubmitted}>
           {isRunning ? "Running..." : "▶ Run Code"}

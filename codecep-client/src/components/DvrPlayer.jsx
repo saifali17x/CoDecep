@@ -10,6 +10,8 @@ import { describeViolationList } from "../lib/astReport";
 import { buildTickMarks, tickKindsPresent } from "../lib/scrubberMarks";
 import { languageOf, taskLabel } from "../lib/workspace";
 import TaskReport, { MergedFlagPill } from "./TaskReport";
+import MetricReviewControl from "./MetricReviewControl";
+import { BEHAVIORAL_METRICS, judgmentIndex, judgmentKey } from "../lib/metricReviewMeta";
 import {
   metricASeverity,
   metricBSeverity,
@@ -51,7 +53,7 @@ const TIER1_LABELS = {
   astViolation: "AST violations",
 };
 
-function MetricPill({ metricKey, metric }) {
+function MetricPill({ metricKey, metric, review = null }) {
   const sev = metric?.inconclusive
     ? // B/C whose guard tripped on a substantial program: grey, never green.
       inconclusiveSeverity()
@@ -75,6 +77,7 @@ function MetricPill({ metricKey, metric }) {
   return (
     <span className="dvr-pill" style={{ color, borderColor: color }} title={metric?.reason ?? sev.label}>
       {METRIC_LABELS[metricKey]}: {sev.label}
+      {review}
     </span>
   );
 }
@@ -249,6 +252,11 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
   // timeline (the Prompt 1 behavior, and the only view a single-task session
   // ever shows).
   const [selectedTask, setSelectedTask] = useState(initialTaskId);
+  // Feature 3 — THIS instructor's own accuracy judgments for this session, so
+  // each optional control renders in the state it was left in. Keyed
+  // "taskId::metric" ("" for a session-level judgment). Never blocks the
+  // player: a failure here leaves the controls blank, which is a valid state.
+  const [judgments, setJudgments] = useState({});
 
   const editorRef = useRef(null);
   const monacoRef = useRef(null);
@@ -277,6 +285,30 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
       cancelled = true;
     };
   }, [sessionId, token]);
+
+  // Load this instructor's saved judgments alongside the replay. Separate
+  // request on purpose: the replay payload is forensic evidence and one
+  // instructor's calibration opinions are not part of it.
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    let cancelled = false;
+    setJudgments({});
+    apiFetch(`/api/sessions/${sessionId}/metric-reviews`, { token })
+      .then((rows) => {
+        if (!cancelled) setJudgments(judgmentIndex(rows));
+      })
+      .catch(() => {
+        /* optional feature — never surface an error over the evidence */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, token]);
+
+  const recordJudgment = useCallback((row) => {
+    if (!row?.metric) return;
+    setJudgments((prev) => ({ ...prev, [judgmentKey(row.taskId, row.metric)]: row.judgment }));
+  }, []);
 
   // A SILENT refetch of the durable record, used whenever a flush lands during
   // a live watch. Deliberately does not touch `t`, `playing` or `following`:
@@ -719,8 +751,39 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
               </span>
             )}
             {Object.keys(METRIC_LABELS).map((key) => (
-              <MetricPill key={key} metricKey={key} metric={shown?.[key]} />
+              <MetricPill
+                key={key}
+                metricKey={key}
+                metric={shown?.[key]}
+                // Feature 3 — optional accuracy judgment, behavioral metrics
+                // only. Scoped to the task currently selected, so judging
+                // "Task 2's authorship" is stored against Task 2 rather than
+                // against the session average shown under "All tasks".
+                review={
+                  BEHAVIORAL_METRICS.includes(key) ? (
+                    <MetricReviewControl
+                      sessionId={sessionId}
+                      taskId={selectedTask}
+                      metric={key}
+                      predictedFlag={Boolean(shown?.[key]?.flag)}
+                      initialJudgment={judgments[judgmentKey(selectedTask, key)] ?? null}
+                      onSaved={recordJudgment}
+                    />
+                  ) : null
+                }
+              />
             ))}
+            {/* Feature 3 — the controls above need explaining exactly once,
+                wherever they appear. TaskReport carries its own copy for the
+                per-task table; this covers the session-level pills, including
+                on a single-task session where no task table renders at all. */}
+            <span className="metric-review-note">
+              👍/👎 beside a behavioral metric is optional and records whether YOU think that
+              assessment was accurate. It is collected only to tune these thresholds manually
+              later — nothing is retuned automatically, and no judgment changes this or any
+              other student's result. Tab-outs, pastes and construct checks are factual
+              records, so they carry no judgment.
+            </span>
             <span className="dvr-severity-note">
               Colors are severity guidance — "flagged" means flagged for instructor
               review. The run-count and typed-share thresholds are configurable
@@ -748,6 +811,9 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
           taskCount={data.taskCount ?? taskIds.length}
           selectedTaskId={selectedTask}
           onReplayTask={selectTask}
+          sessionId={sessionId}
+          judgments={judgments}
+          onJudged={recordJudgment}
         />
       )}
 

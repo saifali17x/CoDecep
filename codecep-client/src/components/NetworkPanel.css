@@ -1,0 +1,81 @@
+/* Network restriction panel (Feature 2) — tokenized against theme.css, one pill
+   shape shared with every other badge in the product. */
+
+.network-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: var(--fs-md, 13px);
+  color: var(--text-primary, #e6edf3);
+  cursor: pointer;
+  margin-bottom: var(--sp-2, 8px);
+}
+.network-toggle em {
+  color: var(--text-secondary, #8b949e);
+  font-style: normal;
+}
+
+.network-add {
+  display: flex;
+  gap: var(--sp-2, 8px);
+  align-items: center;
+  flex-wrap: wrap;
+  margin: var(--sp-3, 12px) 0 var(--sp-2, 8px);
+}
+.network-add input {
+  min-width: 220px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.network-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--sp-2, 8px) 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2, 8px);
+}
+
+.network-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  padding: 3px 6px 3px 10px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--border, #30363d);
+  background: var(--surface-2, #161b22);
+  font-size: var(--fs-sm, 12px);
+}
+.network-chip.range {
+  border-color: var(--accent, #388bfd);
+}
+
+.network-chip-kind {
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.network-chip-remove {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #8b949e);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+}
+.network-chip-remove:hover {
+  color: var(--danger, #f85149);
+  background: var(--surface-3, #21262d);
+}
+
+.network-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3, 12px);
+  margin-top: var(--sp-3, 12px);
+}

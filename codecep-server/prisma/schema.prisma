@@ -37,6 +37,10 @@ model Session {
   user         User?       @relation(fields: [userId], references: [id])
   assignment   Assignment? @relation(fields: [assignmentId], references: [id])
 
+  // Feature 3 — optional instructor judgments on this session's behavioral
+  // metrics. Calibration data only; nothing reads it to tune a threshold.
+  metricReviews MetricReview[]
+
   // Gap-fixes part 2 — a session is identified by (student, ASSIGNMENT), and
   // these are the lookups the exam-open path now makes. Both identifiers are
   // indexed because a row's identity may be either: modern rows carry userId,
@@ -65,6 +69,7 @@ model User {
   taughtClasses Class[]           @relation("InstructorClasses")
   memberships   ClassMembership[]
   sessions      Session[]
+  metricReviews MetricReview[]
 
   @@map("users")
 }
@@ -83,6 +88,21 @@ model Class {
   // Assignments link to it by week — see Session 20 in CLAUDE.md.
   syllabusFilename String?
   allowlist        Json? // { weeks: { week1: [...], ... } }
+
+  // Network restriction (Feature 2) — course-wide policy, because a cohort sits
+  // in the same lab for every assignment; per-assignment would mean re-entering
+  // the same addresses each week.
+  //
+  // The toggle is separate from the list ON PURPOSE: an instructor keeps their
+  // lab's addresses saved and switches enforcement off for a work-from-home
+  // week without retyping them. OFF fully bypasses the check.
+  //
+  // Honest framing (carried through to the UI): this restricts casual
+  // off-network access. It is a DETERRENT, not a guarantee — a determined
+  // student can use a VPN, and the check sees whatever address reaches the
+  // server. Do not describe it as making off-campus access impossible.
+  ipRestrictionEnabled Boolean @default(false)
+  allowedIps           Json? // ["203.0.113.5", "10.0.0.0/24"] — IPs and/or CIDR ranges
 
   memberships ClassMembership[]
   assignments Assignment[]
@@ -118,6 +138,22 @@ model Assignment {
   // structural fact that has to outlive a session.
   taskCount Int @default(1)
 
+  // Timed submission window (Feature 1) — minutes the student gets from when
+  // THEY start, not a wall-clock deadline. NULL = untimed, which is every
+  // existing assignment, so nothing already in the database changes behavior.
+  //
+  // SESSION-RELATIVE was chosen over a fixed wall-clock window (`opensAt` +
+  // duration) deliberately: a lab is "you have 3 hours from when you sit down",
+  // students trickle in, and the session row ALREADY records when each one
+  // started (`sessions.createdAt`). A wall-clock model would need a second
+  // column, a scheduling UI, and a policy for a student who arrives late — all
+  // to express something this course does not need. The deadline is therefore
+  // derived, never stored: `session.createdAt + windowMinutes`.
+  //
+  // Enforcement is SERVER-SIDE on submit, using SERVER time. The exam UI's
+  // countdown is display convenience only and can never widen the window.
+  windowMinutes Int?
+
   // The TASK/QUESTION document students read in the exam split-pane.
   // (Session 20: this was `pdfFilename`, which used to double as the syllabus.
   // The syllabus + allowlist now live on Class.)
@@ -129,4 +165,54 @@ model Assignment {
   sessions Session[]
 
   @@map("assignments")
+}
+
+// ── Behavioral-metric accuracy review (Feature 3) ────────────────────────────
+// OPTIONAL instructor judgments on the BEHAVIORAL metrics, collected so the
+// thresholds can be tuned MANUALLY later against real instructor opinion.
+//
+// Three rules define this model and none is incidental:
+//
+// 1. **Behavioral metrics only.** metricA/metricB/metricC/authorship are
+//    probabilistic inferences about how code was written, so "was this
+//    accurate?" is a meaningful question. Tab-outs, pastes and AST violations
+//    are FACTUAL events — the record either happened or it did not — so they
+//    carry no review control and the route rejects them.
+// 2. **Rich rows, never counters.** Each judgment keeps `predictedFlag` (what
+//    the metric SAID) beside `instructorJudgment` (whether the instructor
+//    agreed). That pairing is the whole point: it is what lets a later query
+//    separate true positives (flagged + accurate) from false positives
+//    (flagged + inaccurate) and false negatives (not flagged + inaccurate).
+//    Collapsing to correct/incorrect counters would destroy exactly the
+//    information the calibration needs.
+// 3. **This COLLECTS data. It never tunes anything.** No code reads these rows
+//    to adjust a threshold, and none should be added. Thresholds are changed by
+//    a human, deliberately, in a later tuning pass (see CLAUDE.md §7).
+//
+// `taskId` is `""` for a session-level judgment rather than NULL, because
+// Postgres treats NULLs as distinct in a unique index — with NULL, the
+// "one judgment per instructor per session-metric" constraint would silently
+// allow duplicates on exactly the session-level rows. The API still speaks
+// `taskId: null`; the empty string is a storage detail.
+model MetricReview {
+  id                 String @id @default(uuid())
+  sessionId          String
+  taskId             String @default("") // "" = the session-level metric, not a task's
+  metric             String // 'metricA' | 'metricB' | 'metricC' | 'authorship'
+  predictedFlag      Boolean // what the metric said at the time of judging
+  instructorJudgment String // 'accurate' | 'inaccurate'
+  instructorId       String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session    Session @relation(fields: [sessionId], references: [id])
+  instructor User    @relation(fields: [instructorId], references: [id])
+
+  // One judgment per instructor per session-metric: re-judging UPDATES rather
+  // than accumulating duplicates. Two instructors may legitimately disagree, so
+  // instructorId is part of the key.
+  @@unique([sessionId, taskId, metric, instructorId])
+  @@index([metric, predictedFlag, instructorJudgment])
+  @@map("metric_reviews")
 }

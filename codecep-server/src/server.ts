@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express'
+import express, { Request, Response, NextFunction } from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import fs from 'fs'
@@ -22,6 +22,9 @@ import {
 } from './ast/allowlist'
 import { buildZip } from './lib/zip'
 import { decideSessionAction, buildRestorePayload } from './lib/sessionLifecycle'
+import { windowStatusFor, isSubmitAllowed, minutesLate } from './lib/examWindow'
+import { isNetworkAllowed, normalizeIp, validateIpRule } from './lib/ipAccess'
+import { parseReviewInput, reviewOut } from './lib/metricReview'
 import {
   validateWorkspace,
   buildCompileScript,
@@ -329,6 +332,17 @@ forensicsWorker.on('failed', (job, err) => {
 })
 
 // ── Express setup ──────────────────────────────────────────────────────────
+// Network restriction (Feature 2) reads the client address from `req.ip`, whose
+// meaning depends on this setting. OFF (the default, and how the demo runs
+// locally) means `req.ip` is the direct socket address — the honest value. ON
+// makes Express trust `X-Forwarded-For`, which is correct behind a reverse proxy
+// and DANGEROUS without one, because any client can then set its own apparent
+// address by sending that header. So it is opt-in via env, never assumed.
+if (process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', true)
+  console.log('[STARTUP] trust proxy ENABLED — client IP will be read from X-Forwarded-For')
+}
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || origin.startsWith('http://localhost')) {
@@ -349,6 +363,72 @@ app.use(cors({
 // store) rather than tuned to the average.
 app.use(express.json({ limit: '5mb' }))
 
+// ── Network restriction (Feature 2) ────────────────────────────────────────
+// Gates ENTERING an exam: the assignment load, session create/resume and the
+// code restore. Policy lives on the CLASS, so the check resolves
+// assignment → class and asks one question.
+//
+// Deliberately NOT on `POST /api/telemetry/submit`. Constraint 2 makes the
+// ingest path O(1) — receive chunk, append, return 202 — and adding a class
+// lookup to every 30s flush of every student would put a database read on the
+// one path that exists to avoid them. The honest consequence, stated in the UI
+// and in §7: this stops a student from OPENING an exam off-network; it does not
+// evict one whose network changes mid-exam. It is a deterrent, not a perimeter.
+//
+// `where` is only used for the log line, so a blocked attempt is diagnosable
+// (the usual cause is an instructor who forgot to allowlist their own address).
+function networkGuard(resolveClassId: (req: Request) => Promise<string | null>) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const classId = await resolveClassId(req)
+      if (!classId) return next() // nothing to restrict against (legacy/dev flows)
+
+      const klass = await withRetry(() =>
+        prisma.class.findUnique({
+          where: { id: classId },
+          select: { ipRestrictionEnabled: true, allowedIps: true },
+        })
+      )
+      // Toggle OFF short-circuits inside isNetworkAllowed, so an unrestricted
+      // class costs one cached lookup and nothing else.
+      if (isNetworkAllowed(klass, req.ip)) return next()
+
+      console.log(
+        `[NETWORK] blocked ${normalizeIp(req.ip) ?? 'unknown'} on class ${classId} (${req.method} ${req.path})`
+      )
+      res.status(403).json({
+        error: 'Access not permitted from this network',
+        detail:
+          'This class is restricted to your institution\'s network. ' +
+          'If you are on campus and still see this, ask your instructor to add this address.',
+        yourIp: normalizeIp(req.ip),
+      })
+    } catch (err) {
+      // A lookup failure must not become a lockout: an outage is not a policy
+      // decision, and failing closed here would block an entire cohort from
+      // starting an exam because of a transient database blip.
+      console.error('[NETWORK] check failed, allowing through:', (err as Error).message)
+      next()
+    }
+  }
+}
+
+const classIdOfAssignment = async (assignmentId: unknown): Promise<string | null> => {
+  if (typeof assignmentId !== 'string' || assignmentId.length === 0) return null
+  const a = await withRetry(() =>
+    prisma.assignment.findUnique({ where: { id: assignmentId }, select: { classId: true } })
+  )
+  return a?.classId ?? null
+}
+
+// ── GET /api/network/my-ip ─────────────────────────────────────────────────
+// What the server sees this request coming from. Exists so an instructor
+// setting up a restriction can add THEIR OWN network without guessing — the
+// most common way to lock yourself out is to allowlist the wrong address.
+app.get('/api/network/my-ip', requireAuth, (req: Request, res: Response) => {
+  res.json({ ip: normalizeIp(req.ip), raw: req.ip ?? null })
+})
+
 // ── POST /api/session/create ──────────────────────────────────────────────
 // Session identity is (student, ASSIGNMENT) — gap #12.
 //
@@ -366,7 +446,11 @@ app.use(express.json({ limit: '5mb' }))
 // A row belonging to a DIFFERENT assignment is never a candidate: the lookup
 // filters on assignmentId, so it simply isn't in the list. Different assignment
 // = different session, always.
-app.post('/api/session/create', validate(sessionCreateSchema), async (req: Request, res: Response) => {
+app.post(
+  '/api/session/create',
+  validate(sessionCreateSchema),
+  networkGuard((req) => classIdOfAssignment(req.body?.assignmentId)),
+  async (req: Request, res: Response) => {
   const { studentId, userId, assignmentId } = req.body
   const hasAssignment = typeof assignmentId === 'string' && assignmentId.length > 0
   const hasUserId = typeof userId === 'string' && userId.length > 0
@@ -385,9 +469,35 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
       prisma.session.findMany({
         where: hasAssignment ? { assignmentId, ...identity } : { assignmentId: null, ...identity },
         orderBy: { updatedAt: 'desc' },
-        select: { id: true, status: true },
+        select: { id: true, status: true, createdAt: true },
       })
     )
+
+    // Timed window (Feature 1): the deadline is SERVER-COMPUTED and handed back
+    // so the exam UI can count down to a fixed instant instead of doing its own
+    // arithmetic on its own clock. It is display data — the submit route
+    // re-derives and re-checks this independently, so a client that ignores or
+    // fakes it gains nothing.
+    const windowMinutes = hasAssignment
+      ? (
+          await withRetry(() =>
+            prisma.assignment.findUnique({
+              where: { id: assignmentId },
+              select: { windowMinutes: true },
+            })
+          )
+        )?.windowMinutes ?? null
+      : null
+    const windowFor = (startedAt: Date) => {
+      const w = windowStatusFor(windowMinutes, startedAt, Date.now())
+      return {
+        startedAt: startedAt.getTime(),
+        deadlineAt: w.deadlineAt,
+        windowMinutes: w.windowMinutes,
+        // Lets the countdown correct for a skewed client clock (see WindowStatus).
+        serverNow: w.serverNow,
+      }
+    }
 
     // ALREADY_SUBMITTED applies to real assignments only. The /legacy dev flow
     // has years of submitted student-001 rows behind it, so treating those as a
@@ -406,7 +516,15 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
         `[SESSION] Resuming session ${decision.sessionId} for ${studentId}` +
           (hasAssignment ? ` on assignment ${assignmentId}` : ' (no assignment / legacy)')
       )
-      res.json({ sessionId: decision.sessionId, status: 'RESUMED', resumed: true })
+      // A resumed session keeps its ORIGINAL start, so a refresh cannot restart
+      // the clock — reloading the page must never buy a student more time.
+      const resumed = candidates.find((s) => s.id === decision.sessionId)!
+      res.json({
+        sessionId: decision.sessionId,
+        status: 'RESUMED',
+        resumed: true,
+        ...windowFor(resumed.createdAt),
+      })
       return
     }
 
@@ -430,7 +548,12 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
       `[SESSION] Created new session ${session.id} for ${studentId}` +
         (hasAssignment ? ` on assignment ${assignmentId}` : '')
     )
-    res.json({ sessionId: session.id, status: 'CREATED', resumed: false })
+    res.json({
+      sessionId: session.id,
+      status: 'CREATED',
+      resumed: false,
+      ...windowFor(session.createdAt),
+    })
   } catch (err) {
     if (isTransientDbError(err)) {
       res.status(503).json({ error: 'Service temporarily unavailable, please retry' })
@@ -438,7 +561,8 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
     }
     throw err
   }
-})
+  }
+)
 
 // ── GET /api/session/:id/restore ───────────────────────────────────────────
 // Put the student's code back after a refresh (gap #4).
@@ -458,7 +582,19 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
 // Student-owned: this returns a student's own source code, so it is
 // `requireAuth` plus an explicit ownership check — never readable by guessing a
 // session id or a username.
-app.get('/api/session/:id/restore', requireAuth, async (req: Request, res: Response) => {
+app.get(
+  '/api/session/:id/restore',
+  requireAuth,
+  networkGuard(async (req) => {
+    const s = await withRetry(() =>
+      prisma.session.findUnique({
+        where: { id: String(req.params.id) },
+        select: { assignment: { select: { classId: true } } },
+      })
+    )
+    return s?.assignment?.classId ?? null
+  }),
+  async (req: Request, res: Response) => {
   try {
     // The whole log is read to recover each task's latest snapshot. This runs
     // once per exam open (never on a hot path), the same read the replay route
@@ -517,7 +653,8 @@ app.get('/api/session/:id/restore', requireAuth, async (req: Request, res: Respo
     }
     throw err
   }
-})
+  }
+)
 
 // ── POST /api/telemetry/submit ─────────────────────────────────────────────
 // Session 24 (Telemetry Capture v2) — events now also carry WHAT changed and
@@ -609,6 +746,44 @@ app.post('/api/telemetry/submit', validate(telemetrySubmitSchema), async (req: R
 app.post('/api/session/:id/submit', async (req: Request, res: Response) => {
   const sessionId = String(req.params.id)
   try {
+    // ── Timed submission window (Feature 1) ────────────────────────────────
+    // THE security-critical check, and it lives here — before the status flip —
+    // for two reasons: a rejected submission must leave the session IN_PROGRESS
+    // (the student is not locked out of a window that is still open for an
+    // instructor to extend), and the deadline must be computed from the
+    // SERVER's clock against the SERVER's record of when the student started.
+    // The exam UI's countdown is a convenience; nothing the client sends is
+    // consulted here, so a fiddled system clock cannot widen the window.
+    //
+    // Untimed assignments (windowMinutes null — every existing one) skip this
+    // entirely and behave exactly as before.
+    const existing = await withRetry(() =>
+      prisma.session.findUnique({
+        where: { id: sessionId },
+        select: { id: true, status: true, createdAt: true, assignment: { select: { windowMinutes: true } } },
+      })
+    )
+    if (existing?.status === 'IN_PROGRESS') {
+      const now = Date.now()
+      const window = windowStatusFor(existing.assignment?.windowMinutes, existing.createdAt, now)
+      if (!isSubmitAllowed(window)) {
+        const late = minutesLate(window, now)
+        console.log(
+          `[SUBMIT] Session ${sessionId} REJECTED — submission window closed` +
+            ` (${window.windowMinutes} min window, ${late} min late)`
+        )
+        res.status(403).json({
+          error: 'Submission window closed',
+          detail:
+            `This ${window.windowMinutes}-minute session closed ` +
+            `${late > 0 ? `${late} minute(s) ago` : 'just now'}. Contact your instructor.`,
+          deadlineAt: window.deadlineAt,
+          windowMinutes: window.windowMinutes,
+        })
+        return
+      }
+    }
+
     const session = await withRetry(() =>
       prisma.session.update({
         where: { id: sessionId, status: 'IN_PROGRESS' },
@@ -1454,6 +1629,10 @@ app.post(
     // Multi-task exams (Prompt 1). Absent / unparseable → 1, i.e. exactly the
     // single-task exam this route has always created.
     const taskCount = Number.parseInt(req.body.taskCount, 10)
+    // Timed window (Feature 1). Absent / unparseable → NULL = untimed, which is
+    // what every assignment created before this feature is. The Zod schema has
+    // already bounded it; this only decides present-vs-absent.
+    const windowMinutes = Number.parseInt(req.body.windowMinutes, 10)
 
     const klass = await prisma.class.findUnique({ where: { id: classId } })
     if (!klass) {
@@ -1472,10 +1651,16 @@ app.post(
         type,
         week: Number.isFinite(week) && week > 0 ? week : 1,
         taskCount: Number.isFinite(taskCount) && taskCount >= 1 && taskCount <= 6 ? taskCount : 1,
+        windowMinutes: Number.isFinite(windowMinutes) && windowMinutes > 0 ? windowMinutes : null,
         assignmentPdfFilename: req.file?.filename ?? null,
       },
     })
-    console.log(`[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week}, ${assignment.taskCount} task(s)) in class ${classId}`)
+    console.log(
+      `[ASSIGNMENT] Created "${assignment.title}" (${assignment.type}, week ${assignment.week},` +
+        ` ${assignment.taskCount} task(s),` +
+        ` ${assignment.windowMinutes ? `${assignment.windowMinutes} min window` : 'untimed'})` +
+        ` in class ${classId}`
+    )
     res.status(201).json(assignment)
   }
 )
@@ -1493,7 +1678,11 @@ app.get('/api/classes/:classId/assignments', requireAuth, async (req: Request, r
 
 // ── GET /api/assignments/:id ───────────────────────────────────────────────
 // Called by the student IDE on load to get week/type/allowlist.
-app.get('/api/assignments/:id', requireAuth, async (req: Request, res: Response) => {
+app.get(
+  '/api/assignments/:id',
+  requireAuth,
+  networkGuard((req) => classIdOfAssignment(req.params.id)),
+  async (req: Request, res: Response) => {
   // withRetry: this load is how a student OPENS an exam — a transient Neon
   // drop here must not block the exam from starting.
   const assignment = await withRetry(() =>
@@ -1517,7 +1706,178 @@ app.get('/api/assignments/:id', requireAuth, async (req: Request, res: Response)
     })
   )
   res.json({ ...assignment, mySubmittedSession: submitted })
+  }
+)
+
+// ── PUT /api/classes/:classId/network (Feature 2) ──────────────────────────
+// The instructor-confirmed network policy. Instructor-only, ownership-checked,
+// same shape as the allowlist route: a human sets it, nothing is inferred.
+//
+// Two validations exist to stop an instructor locking out their own cohort:
+// every entry must parse as an address or CIDR range, and enabling the
+// restriction with an EMPTY list is refused outright (that combination denies
+// everyone — see `isIpAllowed`, which fails closed by design).
+app.put('/api/classes/:classId/network', requireAuth, requireRole('INSTRUCTOR'), async (req: Request, res: Response) => {
+  const classId = String(req.params.classId)
+  const klass = await prisma.class.findUnique({ where: { id: classId } })
+  if (!klass) {
+    res.status(404).json({ error: 'Class not found.' })
+    return
+  }
+  if (klass.instructorId !== req.user!.userId) {
+    res.status(403).json({ error: 'You do not own this class.' })
+    return
+  }
+
+  const { ipRestrictionEnabled, allowedIps } = req.body ?? {}
+  if (typeof ipRestrictionEnabled !== 'boolean') {
+    res.status(400).json({ error: 'ipRestrictionEnabled must be true or false.' })
+    return
+  }
+  if (!Array.isArray(allowedIps)) {
+    res.status(400).json({ error: 'allowedIps must be an array of addresses or CIDR ranges.' })
+    return
+  }
+  const cleaned: string[] = []
+  for (const entry of allowedIps) {
+    if (typeof entry !== 'string') {
+      res.status(400).json({ error: 'Every allowlist entry must be a string.' })
+      return
+    }
+    const problem = validateIpRule(entry)
+    if (problem) {
+      res.status(400).json({ error: `"${entry}" — ${problem}` })
+      return
+    }
+    const trimmed = entry.trim()
+    if (!cleaned.includes(trimmed)) cleaned.push(trimmed)
+  }
+  if (ipRestrictionEnabled && cleaned.length === 0) {
+    res.status(400).json({
+      error: 'Add at least one allowed address before turning the restriction on — an empty list blocks everyone.',
+    })
+    return
+  }
+
+  const updated = await prisma.class.update({
+    where: { id: classId },
+    data: { ipRestrictionEnabled, allowedIps: cleaned },
+    select: { id: true, ipRestrictionEnabled: true, allowedIps: true },
+  })
+  console.log(
+    `[NETWORK] class ${classId} restriction ${ipRestrictionEnabled ? 'ENABLED' : 'disabled'}` +
+      ` with ${cleaned.length} allowed entr(ies)`
+  )
+  res.json({ ...updated, yourIp: normalizeIp(req.ip) })
 })
+
+// ── Behavioral-metric accuracy review (Feature 3) ──────────────────────────
+// OPTIONAL instructor judgments, collected for a LATER MANUAL tuning pass.
+// Nothing reads these rows to adjust a threshold, and nothing should: a
+// detector that retunes itself from the opinions of the people it reports to
+// would quietly learn to stop reporting.
+//
+// Ownership is the same rule as /replay — an instructor may only judge sessions
+// in a class they own — so a judgment cannot be attached to another
+// instructor's cohort.
+async function instructorOwnsSession(sessionId: string, userId: string) {
+  const session = await withRetry(() =>
+    prisma.session.findUnique({
+      where: { id: sessionId },
+      include: { assignment: { include: { class: true } } },
+    })
+  )
+  if (!session) return { session: null, owns: false }
+  // Legacy sessions with no assignment are dev data — instructor role suffices,
+  // matching /replay rather than inventing a second, stricter rule.
+  const owns = !session.assignment || session.assignment.class.instructorId === userId
+  return { session, owns }
+}
+
+app.post(
+  '/api/sessions/:sessionId/metric-reviews',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const sessionId = String(req.params.sessionId)
+    const parsed = parseReviewInput(req.body ?? {})
+    if (!parsed.ok) {
+      res.status(400).json({ error: parsed.error })
+      return
+    }
+    const { session, owns } = await instructorOwnsSession(sessionId, req.user!.userId)
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' })
+      return
+    }
+    if (!owns) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+
+    // UPSERT on (session, task, metric, instructor): re-judging updates the
+    // instructor's own prior answer rather than accumulating duplicates, while
+    // two instructors judging the same metric stay two separate rows — they may
+    // legitimately disagree, and that disagreement is itself calibration data.
+    const row = await withRetry(() =>
+      prisma.metricReview.upsert({
+        where: {
+          sessionId_taskId_metric_instructorId: {
+            sessionId,
+            taskId: parsed.taskId,
+            metric: parsed.metric,
+            instructorId: req.user!.userId,
+          },
+        },
+        create: {
+          sessionId,
+          taskId: parsed.taskId,
+          metric: parsed.metric,
+          predictedFlag: parsed.predictedFlag,
+          instructorJudgment: parsed.judgment,
+          instructorId: req.user!.userId,
+        },
+        // `predictedFlag` is refreshed too: forensics may have been recomputed
+        // since the last judgment, and a judgment paired with a stale prediction
+        // would be miscounted as the wrong kind of error later.
+        update: { predictedFlag: parsed.predictedFlag, instructorJudgment: parsed.judgment },
+      })
+    )
+    console.log(
+      `[REVIEW] ${parsed.metric}${parsed.taskId ? ` (${parsed.taskId})` : ''} on session ${sessionId}` +
+        ` judged ${parsed.judgment} (metric said flag=${parsed.predictedFlag})`
+    )
+    res.json(reviewOut(row))
+  }
+)
+
+// This instructor's own judgments for a session, so the controls can render in
+// the state they were left in. Scoped to the requester: one instructor's
+// calibration opinions are not shown to another as if they were a consensus.
+app.get(
+  '/api/sessions/:sessionId/metric-reviews',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const sessionId = String(req.params.sessionId)
+    const { session, owns } = await instructorOwnsSession(sessionId, req.user!.userId)
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' })
+      return
+    }
+    if (!owns) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+    const rows = await withRetry(() =>
+      prisma.metricReview.findMany({
+        where: { sessionId, instructorId: req.user!.userId },
+        orderBy: { updatedAt: 'desc' },
+      })
+    )
+    res.json(rows.map(reviewOut))
+  }
+)
 
 // ── Instructor session discovery (Session 16 — READ-ONLY) ─────────────────
 // Flags-only summary: never the full forensics stats, never raw event data.

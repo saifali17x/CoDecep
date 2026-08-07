@@ -1,0 +1,58 @@
+/* Behavioral-metric accuracy review (Feature 3).
+   Deliberately quiet: an optional calibration control sitting beside a metric,
+   never competing with the metric itself for attention. Unselected buttons are
+   dimmed until hovered so a report full of them does not read as a demand. */
+
+.metric-review {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--sp-2, 8px);
+  vertical-align: middle;
+}
+
+.metric-review-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 4px);
+  padding: 1px 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  opacity: 0.35;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+.metric-review-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  border-color: var(--border, #30363d);
+}
+.metric-review-btn:disabled {
+  cursor: default;
+}
+
+.metric-review-btn.on {
+  opacity: 1;
+}
+.metric-review-btn.on.accurate {
+  border-color: var(--success, #3fb950);
+  background: #12261e;
+}
+.metric-review-btn.on.inaccurate {
+  border-color: var(--warning, #d29922);
+  background: #2b2111;
+}
+
+.metric-review-error {
+  color: var(--danger, #f85149);
+  font-weight: 700;
+  font-size: var(--fs-sm, 12px);
+  cursor: help;
+}
+
+/* The one-line explanation shown once per report, not once per control. */
+.metric-review-note {
+  margin-top: var(--sp-2, 8px);
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, #8b949e);
+  font-family: var(--font-ui, system-ui, sans-serif);
+}

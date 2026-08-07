@@ -21,6 +21,10 @@ export default function ExamPage() {
   // the editor is seeded rather than programmatically written to after mount —
   // that ordering is what keeps the restore out of the telemetry entirely.
   const [restore, setRestore] = useState(null);
+  // Timed submission window (Feature 1) — the SERVER's deadline for this
+  // session, plus the server's clock, so the countdown is skew-proof. Null for
+  // an untimed assignment. Display only; the server enforces independently.
+  const [examWindow, setExamWindow] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -74,6 +78,15 @@ export default function ExamPage() {
         }
         if (cancelled) return;
         setRestore(restored);
+        setExamWindow(
+          typeof created.deadlineAt === "number"
+            ? {
+                deadlineAt: created.deadlineAt,
+                serverNow: created.serverNow,
+                windowMinutes: created.windowMinutes,
+              }
+            : null,
+        );
         setAssignment(a);
         setSessionId(created.sessionId);
       } catch (err) {
@@ -132,6 +145,9 @@ export default function ExamPage() {
       // this, so the restored text is present from the editor's first frame
       // and is never captured as input.
       restore={restore}
+      // Feature 1: the server-computed deadline for THIS session. A resumed
+      // session keeps its original one, so reloading buys no extra time.
+      examWindow={examWindow}
     />
   );
 }

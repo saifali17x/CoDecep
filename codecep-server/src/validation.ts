@@ -62,6 +62,16 @@ export const createAssignmentSchema = z.looseObject({
     .min(1, 'taskCount must be 1–6')
     .max(6, 'taskCount must be 1–6')
     .optional(),
+  // Timed submission window (Feature 1). Minutes from when each STUDENT starts.
+  // Optional and absent-means-untimed, so every existing caller keeps creating
+  // the untimed assignment it always did. Capped at 24h: a longer "window" is a
+  // take-home, where a per-session countdown is the wrong model entirely.
+  windowMinutes: z.coerce
+    .number()
+    .int('windowMinutes must be a whole number of minutes')
+    .min(1, 'windowMinutes must be at least 1 minute')
+    .max(1440, 'windowMinutes must be at most 1440 (24 hours)')
+    .optional(),
 })
 
 export const astValidateSchema = z.looseObject({

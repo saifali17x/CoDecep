@@ -5,6 +5,7 @@ import { apiFetch } from "../lib/api";
 import AppShell from "../components/AppShell";
 import DvrPlayer from "../components/DvrPlayer";
 import SyllabusManager from "../components/SyllabusManager";
+import NetworkPanel from "../components/NetworkPanel";
 import TaskReport from "../components/TaskReport";
 import {
   metricASeverity,
@@ -65,6 +66,10 @@ export default function ClassPage() {
   // Multi-task exams (Prompt 1): how many questions this exam has. 1 is the
   // single-task exam this form has always created.
   const [taskCount, setTaskCount] = useState(1);
+  // Timed submission window (Feature 1). Empty = untimed, which is how every
+  // assignment behaved before this existed. The window runs from when each
+  // STUDENT starts, not from a wall-clock time — see the schema comment.
+  const [windowMinutes, setWindowMinutes] = useState("");
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -111,6 +116,10 @@ export default function ClassPage() {
       fd.append("type", type);
       fd.append("week", String(week));
       fd.append("taskCount", String(taskCount));
+      // Only sent when set: an empty field must mean "untimed", never 0.
+      if (String(windowMinutes).trim() !== "") {
+        fd.append("windowMinutes", String(windowMinutes).trim());
+      }
       // The TASK/QUESTION document for the exam split-pane.
       if (file) fd.append("assignmentPdf", file);
 
@@ -122,6 +131,7 @@ export default function ClassPage() {
       setTitle("");
       setWeek(1);
       setTaskCount(1);
+      setWindowMinutes("");
       setFile(null);
       await load();
     } catch (err) {
@@ -199,6 +209,10 @@ export default function ClassPage() {
 
         {isInstructor && klass && <SyllabusManager klass={klass} onSaved={load} />}
 
+        {/* Feature 2 — course-wide network policy. Instructor-only, like the
+            syllabus panel above; students never see it. */}
+        {isInstructor && klass && <NetworkPanel klass={klass} onSaved={load} />}
+
         {isInstructor && (
           <div className="section">
             <h2>Create assignment</h2>
@@ -238,6 +252,18 @@ export default function ClassPage() {
                 />
               </div>
               <div className="field">
+                <label htmlFor="a-window">Time limit (min)</label>
+                <input
+                  id="a-window"
+                  type="number"
+                  min="1"
+                  placeholder="none"
+                  value={windowMinutes}
+                  onChange={(e) => setWindowMinutes(e.target.value)}
+                  style={{ width: 90 }}
+                />
+              </div>
+              <div className="field">
                 <label htmlFor="a-pdf">Assignment PDF (optional)</label>
                 <input
                   id="a-pdf"
@@ -253,6 +279,10 @@ export default function ClassPage() {
               come from this class's syllabus (Week N). <strong>Tasks</strong> (1–6) is how many
               questions the exam has — each gets its own file workspace and is compiled and run
               separately, but one PDF covers them all and the student submits once.
+              <br />
+              <strong>Time limit</strong> is optional and runs from when each student STARTS
+              (leave empty for no limit). Students see a countdown, but the deadline is
+              enforced on the server — a late submission is refused whatever their clock says.
             </p>
           </div>
         )}

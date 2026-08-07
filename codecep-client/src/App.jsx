@@ -4,6 +4,7 @@ import EditorPane from "./components/EditorPane";
 import Terminal from "./components/Terminal";
 import StatusBar from "./components/StatusBar";
 import PdfPane from "./components/PdfPane";
+import ExamTimer from "./components/ExamTimer";
 import FilePanel from "./components/FilePanel";
 import socket from "./socket";
 import { debugLog } from "./debug";
@@ -75,6 +76,13 @@ function App({
   // content change is ever reported. Null on a fresh session (open blank) and
   // on the propless /legacy flow.
   restore = null,
+  // Timed submission window (Feature 1). Server-computed absolute deadline plus
+  // the server's clock at the moment it was computed, so the countdown can
+  // correct for a skewed client clock. Null on an untimed assignment — which is
+  // every assignment created before this feature — and the exam then behaves
+  // exactly as it always did. **Display only**: the server re-derives and
+  // re-checks the window on submit, so nothing here can widen it.
+  examWindow = null,
 } = {}) {
   // Effective values: props (real identity from ExamPage) fall back to the
   // hardcoded module consts so the propless /legacy dev flow is unchanged.
@@ -137,6 +145,11 @@ function App({
   const [restoreNotice, setRestoreNotice] = useState(
     typeof restore?.restoredFrom === "number" ? restore.restoredFrom : null,
   );
+  // Set when the SERVER refuses a submission because the window has closed.
+  // Kept distinct from the submit banners: this is not "you submitted", it is
+  // "the server would not accept this", and saying so plainly is the only
+  // honest option — the client cannot undo it.
+  const [windowClosed, setWindowClosed] = useState(null);
 
   // Everything on screen belongs to the ACTIVE task. Derived, never duplicated,
   // for the same reason the active buffer is derived from `files`: one source
@@ -401,9 +414,19 @@ function App({
           method: "POST",
         });
         const data = await res.json();
-        // Distinguish a real submission from an idempotency hit so the
-        // student never thinks a fresh submission happened when it didn't.
-        if (data?.status === "ALREADY_SUBMITTED") {
+        // Timed window (Feature 1): the SERVER refused this submission because
+        // the window had closed. It stays refused — the client has no say — so
+        // the student is told plainly rather than shown a success banner for a
+        // submission that did not happen. The Immune Phase above has already
+        // disarmed, which is correct either way: the exam is over for them,
+        // and their work is in the database up to the final flush.
+        if (res.status === 403 && data?.error === "Submission window closed") {
+          setWindowClosed(data.detail ?? "The submission window for this session has closed.");
+          setSubmitOutcome(null);
+          console.warn("[SUBMIT] rejected — submission window closed");
+        } else if (data?.status === "ALREADY_SUBMITTED") {
+          // Distinguish a real submission from an idempotency hit so the
+          // student never thinks a fresh submission happened when it didn't.
           setSubmitOutcome("ALREADY_SUBMITTED");
         }
       } catch (err) {
@@ -706,7 +729,27 @@ function App({
         onBack={onBack}
         title={assignmentTitle}
         labMode={assignmentTitle ? LAB_MODE_EFFECTIVE : undefined}
+        timer={
+          typeof examWindow?.deadlineAt === "number" ? (
+            <ExamTimer
+              deadlineAt={examWindow.deadlineAt}
+              serverNow={examWindow.serverNow}
+              isSubmitted={isSubmitted}
+              // Submit on the student's behalf shortly BEFORE the deadline, so
+              // the request lands inside the window the server enforces. This
+              // is a courtesy to an honest student, not a loophole: it goes
+              // through the same handleSubmit — same final flush, same disarm —
+              // and the server still checks the window itself.
+              onExpire={handleSubmit}
+            />
+          ) : null
+        }
       />
+      {windowClosed && (
+        <div className="submit-banner already" role="alert">
+          ⏱ Submission window closed — the server did not accept this submission. {windowClosed}
+        </div>
+      )}
       {!isSubmitted && restoreNotice !== null && (
         <div className="restore-banner">
           <span>
@@ -725,7 +768,7 @@ function App({
           </button>
         </div>
       )}
-      {isSubmitted && (
+      {isSubmitted && submitOutcome && (
         <div className={`submit-banner ${submitOutcome === "ALREADY_SUBMITTED" ? "already" : "fresh"}`}>
           {submitOutcome === "ALREADY_SUBMITTED"
             ? "This assignment has already been submitted. The editor is locked."

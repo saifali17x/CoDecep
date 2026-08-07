@@ -1,0 +1,52 @@
+/* Timed submission window countdown (Feature 1) — display only; the server is
+   the authority. Colour is always paired with the "Time left" label so the
+   state is never carried by hue alone. */
+.exam-timer {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2, 8px);
+  padding: 3px 10px;
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--border, #30363d);
+  background: var(--surface-2, #161b22);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  white-space: nowrap;
+}
+
+.exam-timer-label {
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.exam-timer-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-md, 13px);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, #e6edf3);
+}
+
+.exam-timer.warn {
+  border-color: var(--warning, #d29922);
+}
+.exam-timer.warn .exam-timer-value,
+.exam-timer.warn .exam-timer-label {
+  color: var(--warning, #d29922);
+}
+
+.exam-timer.urgent {
+  border-color: var(--danger, #f85149);
+  background: #2a1214;
+}
+.exam-timer.urgent .exam-timer-value,
+.exam-timer.urgent .exam-timer-label {
+  color: var(--danger, #f85149);
+}
+
+.exam-timer.done {
+  border-color: var(--success, #3fb950);
+}
+.exam-timer.done .exam-timer-label {
+  color: var(--success, #3fb950);
+}
