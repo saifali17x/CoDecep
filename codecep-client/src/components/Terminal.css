@@ -1,24 +1,38 @@
-/* ── Execution console (Session 21, xterm.js) ─────────────────────────────────
-   Bottom of the exam right-pane: xterm output on the left, batch stdin on the
-   right. Tokenized to match the rest of the app. */
+/* ── Execution console (Session 21, upgraded in UI polish part 1) ─────────────
+   A first-class, standalone-console-style terminal at the bottom of the exam
+   right-pane: xterm output on the left, batch stdin on the right, a real header
+   above both. Its HEIGHT is driven by --console-height, which App.jsx writes
+   from the draggable divider — so the size is the student's, not a constant
+   buried here. Tokenized to match the rest of the app. */
 
 .console-pane {
   display: flex;
   flex-direction: column;
-  height: 34%;
-  min-height: 150px;
+  /* Generously sized by default; the drag handle above it and the Maximize
+     button in its header are what make it the student's decision. */
+  height: var(--console-height, 42%);
+  min-height: 190px;
   background: var(--bg);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   font-family: var(--font-ui);
 }
 
+/* Maximized: App hides the editor row and the divider, and the console takes
+   the whole workspace. `flex: 1` rather than a fixed height so it fills
+   whatever is left after the task tabs. */
+.console-pane.maximized {
+  height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .console-bar {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   flex-shrink: 0;
-  height: 30px;
+  height: 34px;
   padding: 0 var(--sp-3);
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -28,33 +42,51 @@
 .console-title {
   font-size: var(--fs-sm);
   font-weight: 600;
-  color: var(--text-2);
+  color: var(--text);
   letter-spacing: 0.4px;
   text-transform: uppercase;
 }
 
+.console-tag {
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  padding: 1px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* How the last run ended, in words. Colour is emphasis; the label is the
+   meaning — the same rule the forensic pills follow. */
 .console-run-status {
   flex: 1;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   font-size: var(--fs-sm);
+  font-family: var(--font-mono);
   color: var(--text-muted);
 }
-.console-run-status.is-running { color: var(--info); }
+.console-run-status.running { color: var(--info); }
+.console-run-status.ok      { color: var(--success); }
+.console-run-status.compile { color: var(--warning); }
+.console-run-status.error   { color: var(--danger); }
 
-.console-clear {
+.console-btn {
   background: var(--surface-2);
   border: 1px solid var(--border);
   color: var(--text-2);
   border-radius: var(--r-sm);
   font-family: var(--font-ui);
   font-size: var(--fs-xs);
-  padding: 3px 10px;
+  padding: 4px 10px;
   cursor: pointer;
-  transition: background var(--transition);
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition);
 }
-.console-clear:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
-.console-clear:disabled { opacity: 0.45; cursor: not-allowed; }
+.console-btn:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.console-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .console-body {
   flex: 1;
@@ -62,17 +94,27 @@
   display: flex;
 }
 
+/* The console proper. Its own background (darker than the app surface) is what
+   makes it read as a real terminal window rather than another panel. */
+.console-output {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: #0a0d12;
+  padding: var(--sp-2) 0 var(--sp-2) var(--sp-3);
+}
+
 .console-xterm {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  padding: 6px 0 0 8px;
 }
 /* xterm sizes itself to the host; keep its own scrollbar slim (theme.css). */
 .console-xterm .xterm { height: 100%; }
 
 .console-stdin {
-  width: 250px;
+  width: 270px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -93,14 +135,6 @@
   letter-spacing: 0.3px;
 }
 
-.console-hint {
-  color: var(--info);
-  cursor: help;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
 .console-stdin-box {
   flex: 1;
   min-height: 0;
@@ -112,7 +146,7 @@
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   line-height: 1.5;
-  padding: 6px 8px;
+  padding: 8px 10px;
   outline: none;
   transition: border-color var(--transition);
 }
@@ -124,13 +158,13 @@
   margin: 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 /* Narrow layout: stdin drops below the output instead of squeezing it. The pane
    also grows a little so the input box stays usable rather than a sliver. */
 @media (max-width: 900px) {
-  .console-pane { height: 44%; min-height: 230px; }
+  .console-pane { height: var(--console-height, 50%); min-height: 260px; }
   .console-body { flex-direction: column; }
   .console-stdin {
     width: 100%;

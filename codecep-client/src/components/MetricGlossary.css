@@ -1,0 +1,61 @@
+/* Inline "what these signals check" glossary (UI polish part 1). Quiet by
+   default — it is reference material, not a warning — and tokenized so it
+   matches every other secondary block in the app. */
+
+.metric-glossary {
+  margin: var(--sp-2) 0 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.metric-glossary > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  padding: 3px 0;
+  user-select: none;
+}
+.metric-glossary > summary:hover { color: var(--text); }
+
+.metric-glossary-list {
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-2);
+  display: grid;
+  gap: var(--sp-2);
+  background: var(--bg);
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: var(--r-sm);
+}
+
+.metric-glossary-item dt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  color: var(--text);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+
+/* The technical name stays reachable for the report and the defense — smaller
+   and quieter than the plain name, but never removed. */
+.metric-glossary-tech {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.metric-glossary-item dd {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.metric-glossary-note {
+  margin: var(--sp-2) 0 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}

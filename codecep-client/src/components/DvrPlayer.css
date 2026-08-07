@@ -106,6 +106,57 @@
   margin-bottom: 10px;
 }
 
+/* ── Metric cards (UI polish part 1) ──────────────────────────────────────────
+   The forensic row used to be four pills reading "Metric B (Linear Injection):
+   flagged" — a name a professor has no way to decode and a verdict with no
+   stated basis. Each metric is now a small card: PLAIN name, the verdict in the
+   existing severity colour, one line saying what the metric checks, and the
+   technical name underneath for the report and the defense. Wording comes from
+   lib/metricLabels.js; only the presentation lives here. */
+.dvr-metric {
+  flex: 1 1 260px;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+
+.dvr-metric-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.dvr-metric-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Colour ALWAYS rides with text (Constraint 7) — the verdict string is the
+   meaning, the colour is only emphasis. */
+.dvr-metric-verdict {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.dvr-metric-desc {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.dvr-metric-tech {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
 /* Severity pills: color comes inline from lib/metricColors.js LEVEL_COLORS
    (which the theme tokens match); shape is the shared pill. */
 .dvr-pill {

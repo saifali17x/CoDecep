@@ -11,7 +11,15 @@ import { buildTickMarks, tickKindsPresent } from "../lib/scrubberMarks";
 import { languageOf, taskLabel } from "../lib/workspace";
 import TaskReport, { MergedFlagPill } from "./TaskReport";
 import MetricReviewControl from "./MetricReviewControl";
+import MetricGlossary from "./MetricGlossary";
 import { BEHAVIORAL_METRICS, judgmentIndex, judgmentKey } from "../lib/metricReviewMeta";
+import {
+  METRIC_INFO,
+  TIER1_INFO,
+  describeMetric,
+  describeTier1,
+  metricInfo,
+} from "../lib/metricLabels";
 import {
   metricASeverity,
   metricBSeverity,
@@ -29,12 +37,11 @@ import "./DvrPlayer.css";
 // order within a typed burst is approximated. Display-only: the editor is
 // read-only and paste highlights use Monaco decorations, never content edits.
 
-const METRIC_LABELS = {
-  metricA: "Metric A (Trial-and-Error)",
-  metricB: "Metric B (Linear Injection)",
-  metricC: "Metric C (Robotic Variance)",
-  authorship: "Authorship (Typed vs Pasted)",
-};
+// The four behavioral metrics, in the order the report shows them. Their
+// NAMES and descriptions come from lib/metricLabels.js — the one place the
+// wording lives, so this view and the session table cannot describe the same
+// number two different ways.
+const METRIC_ORDER = ["metricA", "metricB", "metricC", "authorship"];
 const SPEEDS = [1, 2, 5, 10, 25];
 const PASTE_FLASH_MS = 1200;
 
@@ -44,13 +51,6 @@ const FIDELITY_HINT = {
   exact: "Reconstructed character-for-character from the recorded edits, and verified against every 30s snapshot.",
   approx:
     "This session predates exact keystroke capture (or its snapshots disagreed with the recorded edits). Timing and paste moments are exact; character order within a typed burst is approximated.",
-};
-
-// Session 22 (part 2): the live Tier-1 feed is now also summarised per session.
-const TIER1_LABELS = {
-  tabOut: "Tab-outs",
-  illegalPaste: "External pastes",
-  astViolation: "AST violations",
 };
 
 function MetricPill({ metricKey, metric, review = null }) {
@@ -74,10 +74,26 @@ function MetricPill({ metricKey, metric, review = null }) {
           ? authorshipSeverity(metric?.flag, metric?.stats?.typedRatio ?? null)
           : metricBSeverity(metric?.flag);
   const color = LEVEL_COLORS[sev.level];
+  const info = metricInfo(metricKey);
+  // The DVR has vertical room, so the description is INLINE here rather than
+  // hidden behind a tooltip: this is the screen where an instructor decides
+  // what a flag means, and "Metric B: flagged" told them nothing about what B
+  // examined. The technical name stays underneath for the report and defense.
   return (
-    <span className="dvr-pill" style={{ color, borderColor: color }} title={metric?.reason ?? sev.label}>
-      {METRIC_LABELS[metricKey]}: {sev.label}
-      {review}
+    <span
+      className="dvr-metric"
+      style={{ borderColor: color }}
+      title={describeMetric(metricKey, metric?.reason ?? sev.label)}
+    >
+      <span className="dvr-metric-head">
+        <span className="dvr-metric-name">{info?.plain ?? metricKey}</span>
+        <span className="dvr-metric-verdict" style={{ color }}>
+          {sev.label}
+        </span>
+        {review}
+      </span>
+      <span className="dvr-metric-desc">{info?.desc}</span>
+      <span className="dvr-metric-tech mono">{info?.tech}</span>
     </span>
   );
 }
@@ -89,8 +105,8 @@ function Tier1Row({ summary }) {
   if (!summary) return null;
   return (
     <div className="dvr-tier1">
-      <span className="dvr-tier1-title">Live violations during the exam:</span>
-      {Object.entries(TIER1_LABELS).map(([key, label]) => {
+      <span className="dvr-tier1-title">What happened live during the exam:</span>
+      {Object.entries(TIER1_INFO).map(([key, info]) => {
         const n = summary[key];
         const unknown = n === null || n === undefined;
         const color = unknown
@@ -103,15 +119,16 @@ function Tier1Row({ summary }) {
             key={key}
             className="dvr-pill"
             style={{ color, borderColor: color }}
-            title={
+            title={describeTier1(
+              key,
               unknown
-                ? "Not recorded — this session predates per-session Tier-1 logging."
+                ? "not recorded — this session predates per-session Tier-1 logging"
                 : n > 0
-                  ? `${n} ${label.toLowerCase()} — flagged for review`
-                  : `No ${label.toLowerCase()} recorded`
-            }
+                  ? `${n} recorded — flagged for review`
+                  : "none recorded",
+            )}
           >
-            {label}: {unknown ? "not recorded" : n}
+            {info.plain}: {unknown ? "not recorded" : n}
           </span>
         );
       })}
@@ -140,14 +157,17 @@ function AstAuditRow({ audit }) {
   }, {});
   return (
     <div className="dvr-tier1">
-      <span className="dvr-tier1-title">All-files construct check (at submit):</span>
+      <span className="dvr-tier1-title" title={METRIC_INFO.astAudit.desc}>
+        {METRIC_INFO.astAudit.plain} — every file checked at submit:
+      </span>
       <span
         className="dvr-pill"
         style={{ color, borderColor: color }}
         title={
-          checkedFiles.length === 0
+          (checkedFiles.length === 0
             ? "No code files were present to check."
-            : `Checked ${checkedFiles.join(", ")} against the ${audit.allowlistSource} allowlist`
+            : `Checked ${checkedFiles.join(", ")} against the ${audit.allowlistSource} allowlist.`) +
+          `\n\n${METRIC_INFO.astAudit.desc}\n${METRIC_INFO.astAudit.tech}`
         }
       >
         {checkedFiles.length === 0
@@ -750,7 +770,7 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
                 {taskBundle ? "'s own forensics" : " — no per-task forensics recorded"}:
               </span>
             )}
-            {Object.keys(METRIC_LABELS).map((key) => (
+            {METRIC_ORDER.map((key) => (
               <MetricPill
                 key={key}
                 metricKey={key}
@@ -800,6 +820,11 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
 
       <Tier1Row summary={data.tier1Summary} />
       <AstAuditRow audit={shown?.astAudit} />
+
+      {/* The four metric cards above carry their own descriptions inline; this
+          adds the construct check and the three live-event kinds, so every
+          signal on this screen is explained in one place. */}
+      <MetricGlossary keys={["astAudit", "merged"]} includeTier1 />
 
       {/* Per-task breakdown + merged report (Prompt 2). Rendered only for a
           genuinely multi-task session: a single-task exam shows exactly the

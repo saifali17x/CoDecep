@@ -126,3 +126,12 @@
   transition: background var(--transition);
 }
 .dvr-load-btn:hover { background: var(--surface-3); }
+
+/* Raw alert log: the plain-language name leads, the stored event name sits
+   underneath so the log still matches what is in `tier1_log` (UI polish
+   part 1 — wording from lib/metricLabels.js). */
+.alert-type-tech {
+  display: block;
+  font-size: 9px;
+  color: var(--text-muted);
+}

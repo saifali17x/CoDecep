@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import { metricPlainName } from "../lib/metricLabels";
 import "./MetricReviewControl.css";
 
 // ── Behavioral-metric accuracy review (Feature 3) ───────────────────────────
@@ -74,15 +75,24 @@ export default function MetricReviewControl({
     }
   }
 
+  // The plain name is what makes "was this accurate?" answerable: an instructor
+  // can judge "Typed vs pasted" against the program in front of them, where
+  // "authorship" was a word they had to decode first. The stored `metric` key
+  // is unchanged — this is the label only.
+  const name = metricPlainName(metric);
+
   return (
-    <span className="metric-review" title="Optional: was this assessment accurate? Used only to tune thresholds later.">
+    <span
+      className="metric-review"
+      title={`Optional: was the "${name}" assessment accurate for this session? Collected only to tune these thresholds manually later — nothing is retuned automatically.`}
+    >
       <button
         type="button"
         className={`metric-review-btn ${judgment === "accurate" ? "on accurate" : ""}`}
         onClick={() => send("accurate")}
         disabled={busy}
         aria-pressed={judgment === "accurate"}
-        aria-label={`Mark ${metric} assessment accurate`}
+        aria-label={`Mark the "${name}" assessment accurate`}
       >
         👍
       </button>
@@ -92,7 +102,7 @@ export default function MetricReviewControl({
         onClick={() => send("inaccurate")}
         disabled={busy}
         aria-pressed={judgment === "inaccurate"}
-        aria-label={`Mark ${metric} assessment inaccurate`}
+        aria-label={`Mark the "${name}" assessment inaccurate`}
       >
         👎
       </button>

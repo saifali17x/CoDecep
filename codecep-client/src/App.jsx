@@ -9,6 +9,7 @@ import FilePanel from "./components/FilePanel";
 import socket from "./socket";
 import { debugLog } from "./debug";
 import * as liveStream from "./lib/liveStream";
+import { runStatusOf } from "./lib/runStatus";
 import {
   ENTRY_FILE,
   kindOf,
@@ -41,6 +42,15 @@ const STUDENT_ID = "student-001";
 const PDF_DEFAULT_PCT = 40;
 const PDF_MIN_PCT = 25;
 const PDF_MAX_PCT = 60;
+
+// UI polish part 1 — the console is a first-class element, not a strip at the
+// bottom. Percent of the editor column given to it, draggable between these
+// bounds (and separately maximizable, which bypasses the split entirely).
+// Presentation only: nothing here touches execution, which stays the Judge0
+// batch model (CLAUDE.md §7.4).
+const CONSOLE_DEFAULT_PCT = 42;
+const CONSOLE_MIN_PCT = 15;
+const CONSOLE_MAX_PCT = 80;
 
 // The tool is scoped to C++ only (see TopBar): sandboxed Judge0 execution
 // reliably supports self-contained C++ programs.
@@ -129,6 +139,10 @@ function App({
               : ENTRY_FILE,
           outputFiles: [],
           consoleEvents: [],
+          // How this task's LAST run ended, for the console header. Per task
+          // for the same reason the console events are: Task 2's "Exited (0)"
+          // must never be shown over Task 3's compile error.
+          runStatus: null,
           stdin: "",
         },
       ]),
@@ -159,6 +173,7 @@ function App({
   const activeFile = current.activeFile;
   const outputFiles = current.outputFiles;
   const consoleEvents = current.consoleEvents;
+  const runStatus = current.runStatus;
   const stdin = current.stdin;
 
   // Patch one task's slice. `patch` may be an object or a function of the
@@ -193,6 +208,15 @@ function App({
   const [pdfPct, setPdfPct] = useState(PDF_DEFAULT_PCT);
   const workspaceRef = useRef(null);
   const draggingRef = useRef(false);
+
+  // Editor/console split — the vertical twin of the PDF divider above, plus a
+  // maximize state that takes the console full-workspace. Both are layout
+  // only: the editor, the capture engine and the execution path are untouched
+  // by either.
+  const [consolePct, setConsolePct] = useState(CONSOLE_DEFAULT_PCT);
+  const [consoleMax, setConsoleMax] = useState(false);
+  const mainRef = useRef(null);
+  const draggingConsoleRef = useRef(false);
 
   // ── Active buffer ─────────────────────────────────────────────────────────
   // `activeFile` is either a workspace file name or an output key
@@ -333,13 +357,34 @@ function App({
     setPdfPct(Math.min(PDF_MAX_PCT, Math.max(PDF_MIN_PCT, pct)));
   }, []);
 
+  // The console divider, measured against the editor COLUMN rather than the
+  // whole workspace: with a PDF open the column is only part of the screen, and
+  // a percentage of the wrong box makes the handle drift away from the pointer.
+  const handleConsoleDividerMove = useCallback((clientY) => {
+    const el = mainRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.height === 0) return;
+    const pct = ((rect.bottom - clientY) / rect.height) * 100;
+    setConsolePct(Math.min(CONSOLE_MAX_PCT, Math.max(CONSOLE_MIN_PCT, pct)));
+  }, []);
+
   useEffect(() => {
     function onMove(e) {
+      if (draggingConsoleRef.current) {
+        e.preventDefault();
+        handleConsoleDividerMove(e.clientY);
+        return;
+      }
       if (!draggingRef.current) return;
       e.preventDefault();
       handleDividerMove(e.clientX);
     }
     function onUp() {
+      if (draggingConsoleRef.current) {
+        draggingConsoleRef.current = false;
+        document.body.classList.remove("is-splitting-v");
+      }
       if (!draggingRef.current) return;
       draggingRef.current = false;
       document.body.classList.remove("is-splitting");
@@ -350,12 +395,18 @@ function App({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [handleDividerMove]);
+  }, [handleDividerMove, handleConsoleDividerMove]);
 
   function startDrag(e) {
     e.preventDefault();
     draggingRef.current = true;
     document.body.classList.add("is-splitting");
+  }
+
+  function startConsoleDrag(e) {
+    e.preventDefault();
+    draggingConsoleRef.current = true;
+    document.body.classList.add("is-splitting-v");
   }
 
   // ── Submit: flush → await → disarm → enqueue (Session 25) ──────────────────
@@ -605,6 +656,9 @@ function App({
     // Clear-on-run so repeated runs stay readable.
     patchTask(runTaskId, (t) => ({
       outputFiles: [],
+      // The previous run's verdict is stale the moment a new one starts; the
+      // header shows "Running…" until this run produces its own.
+      runStatus: null,
       activeFile: outputNameOf(t.activeFile) ? ENTRY_FILE : t.activeFile,
       consoleEvents: [
         { kind: "cmd", text: BUILD_COMMAND },
@@ -642,7 +696,8 @@ function App({
       // A rejected workspace (bad name, too many files) comes back as a plain
       // error — surface it instead of falling through to "(no output)".
       if (!res.ok && data.error) {
-        pushConsole(runTaskId, [{ kind: "stderr", text: data.error }]);
+        patchTask(runTaskId, { runStatus: runStatusOf(data, false) });
+        pushConsole(runTaskId, [{ kind: "stderr", text: data.error }, { kind: "prompt", text: "$" }]);
         return;
       }
       if (data.compileOutput) {
@@ -697,9 +752,20 @@ function App({
           });
         }
       }
+      // The header's one-line verdict for this run ("Exited (0)", "Compilation
+      // error", …), derived from the SAME response the console just rendered so
+      // the two can never disagree.
+      patchTask(runTaskId, { runStatus: runStatusOf(data, res.ok) });
+      // A resting prompt after the run, so the console reads as a real console
+      // session rather than a log that just stops.
+      entries.push({ kind: "prompt", text: "$" });
       pushConsole(runTaskId, entries);
     } catch (err) {
-      pushConsole(runTaskId, [{ kind: "stderr", text: `Network error — ${err.message}` }]);
+      patchTask(runTaskId, { runStatus: { state: "error", label: "Network error" } });
+      pushConsole(runTaskId, [
+        { kind: "stderr", text: `Network error — ${err.message}` },
+        { kind: "prompt", text: "$" },
+      ]);
     } finally {
       setIsRunning(false);
     }
@@ -795,7 +861,11 @@ function App({
             />
           </>
         )}
-        <div className="main-content">
+        <div
+          className={`main-content ${consoleMax ? "console-maximized" : ""}`}
+          ref={mainRef}
+          style={{ "--console-height": `${consolePct}%` }}
+        >
           {/* Task tabs (Prompt 1). Rendered only for a genuinely multi-task
               exam: a single-task assignment must look exactly as it did
               before, with no extra chrome to explain. The PDF pane sits
@@ -856,13 +926,30 @@ function App({
               taskLabel={isMultiTask ? taskLabel(activeTask) : null}
             />
           </div>
+          {/* Drag to resize the console. Hidden while it is maximized, where
+              there is no split left to move. */}
+          {!consoleMax && (
+            <div
+              className="console-divider"
+              onPointerDown={startConsoleDrag}
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="Resize terminal"
+              title="Drag to resize the terminal"
+            />
+          )}
           <Terminal
             events={consoleEvents}
             stdin={stdin}
             onStdinChange={(next) => patchTask(activeTask, { stdin: next })}
-            onClear={() => patchTask(activeTask, { consoleEvents: [] })}
+            onClear={() =>
+              patchTask(activeTask, { consoleEvents: [], runStatus: null })
+            }
             running={isRunning}
             disabled={isSubmitted}
+            runStatus={runStatus}
+            maximized={consoleMax}
+            onToggleMaximize={() => setConsoleMax((v) => !v)}
           />
         </div>
       </div>

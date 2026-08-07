@@ -1,6 +1,8 @@
 import { normalizeTaskRows, flaggedMetricsOfRow, TASK_METRIC_KEYS } from "../lib/taskReport";
 import MetricReviewControl from "./MetricReviewControl";
 import { BEHAVIORAL_METRICS, predictedFlagOfRow, judgmentKey } from "../lib/metricReviewMeta";
+import { METRIC_INFO, describeMetric } from "../lib/metricLabels";
+import MetricGlossary from "./MetricGlossary";
 import {
   metricASeverity,
   metricBSeverity,
@@ -29,11 +31,35 @@ import "./TaskReport.css";
 // Row normalization lives in lib/taskReport.js so this file exports components
 // only (and so the DVR and the session table share one reading of the data).
 
-function Cell({ sev, short }) {
+function Cell({ sev, short, metricKey }) {
   return (
-    <span className="sev-cell" style={{ color: LEVEL_COLORS[sev.level] }} title={sev.label}>
+    <span
+      className="sev-cell"
+      style={{ color: LEVEL_COLORS[sev.level] }}
+      // The tooltip carries the plain name, what the metric CHECKS, this task's
+      // verdict and the technical name — one wording, from lib/metricLabels.js,
+      // shared with the DVR pills and the session table.
+      title={metricKey ? describeMetric(metricKey, sev.label) : sev.label}
+    >
       {short}
     </span>
+  );
+}
+
+/**
+ * A column header that reads as plain language, with the technical name kept
+ * underneath in small type so the report stays usable for the docs and the
+ * defense. The description rides in the tooltip — a table header has no room
+ * for a sentence, but it must never be the thing that gets dropped.
+ */
+function MetricHeader({ metricKey }) {
+  const info = METRIC_INFO[metricKey];
+  if (!info) return <th />;
+  return (
+    <th title={`${info.plain} — ${info.desc}\n\n${info.tech}`}>
+      <span className="th-plain">{info.short}</span>
+      <span className="th-tech">{info.tech.split(" — ")[0]}</span>
+    </th>
   );
 }
 
@@ -111,12 +137,13 @@ export function MergedFlagPill({ merged, taskCount }) {
     <span
       className="merged-pill"
       style={{ color, borderColor: color }}
-      title={
+      title={describeMetric(
+        "merged",
         merged?.reason ??
-        (merged?.flag === false
-          ? "No task flagged. Flags are probabilistic signals for instructor review."
-          : sev.label)
-      }
+          (merged?.flag === false
+            ? "No task flagged. Flags are probabilistic signals for instructor review."
+            : sev.label),
+      )}
     >
       {sev.label}
     </span>
@@ -161,11 +188,9 @@ export default function TaskReport({
           <thead>
             <tr>
               <th>Task</th>
-              <th title="Metric A — Trial-and-Error (compile runs for THIS task)">Runs (A)</th>
-              <th title="Metric B — Linear Injection">B</th>
-              <th title="Metric C — Robotic Variance">C</th>
-              <th title="Authorship — how much of this task's code came from typing">Auth</th>
-              <th title="Submit-time construct check over this task's code files">Constructs</th>
+              {TASK_METRIC_KEYS.map((key) => (
+                <MetricHeader key={key} metricKey={key} />
+              ))}
               {onReplayTask && <th></th>}
             </tr>
           </thead>
@@ -196,7 +221,7 @@ export default function TaskReport({
                     const reviewable = sessionId && BEHAVIORAL_METRICS.includes(key);
                     return (
                       <td key={key}>
-                        <Cell sev={sev} short={short} />
+                        <Cell sev={sev} short={short} metricKey={key} />
                         {reviewable && (
                           <MetricReviewControl
                             sessionId={sessionId}
@@ -223,6 +248,10 @@ export default function TaskReport({
           </tbody>
         </table>
       </div>
+
+      {/* The column headers are plain-language and short; this is where the
+          full sentence for each of them lives, without needing a hover. */}
+      <MetricGlossary keys={[...TASK_METRIC_KEYS, "merged"]} />
 
       {sessionId && (
         <p className="metric-review-note">

@@ -1,18 +1,25 @@
 import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { IDLE_STATUS, RUNNING_STATUS } from "../lib/runStatus";
 import "@xterm/xterm/css/xterm.css";
 import "./Terminal.css";
 
-// ── Execution console (Session 21) ───────────────────────────────────────────
+// ── Execution console (Session 21, upgraded in UI polish part 1) ─────────────
 // Replaces the old fake tabbed VS-Code terminal, which showed telemetry flush
 // traces to the student. This console shows EXECUTION OUTPUT ONLY — program
 // stdout/stderr, compiler messages, and the run status. No telemetry, no
 // socket traces, no debug lines are ever piped here.
 //
-// Input model is BATCH stdin, matching Judge0's submission model: the student
-// types every input the program will read, in order, and they are sent with the
-// run. See CLAUDE.md §7 for why a reactive live TTY is out of scope.
+// UI polish part 1 makes it a first-class console rather than a cramped strip:
+// a real header with a run-status line, a generous default height that the
+// student can DRAG (the divider lives in App.jsx, which owns the split) or
+// MAXIMIZE to fill the workspace, and console-grade type and padding. All of
+// that is PRESENTATION. The input model is unchanged and still BATCH stdin,
+// matching Judge0's submission model: the student types every input the program
+// will read, in order, and they are sent with the run. See CLAUDE.md §7.4 for
+// why a reactive live TTY is out of scope — the hint below says so plainly
+// rather than implying an interactivity that does not exist.
 
 // ANSI colors — the console speaks the same severity language as the rest of
 // the app (red = error, yellow = compiler, dim grey = meta).
@@ -23,6 +30,7 @@ const ANSI = {
   yellow: "\x1b[33m",
   green: "\x1b[32m",
   cyan: "\x1b[36m",
+  bold: "\x1b[1m",
 };
 
 const KIND_COLOR = {
@@ -32,14 +40,15 @@ const KIND_COLOR = {
   compile: ANSI.yellow,
   ok: ANSI.green,
   meta: ANSI.dim,
+  prompt: ANSI.dim,
 };
 
 const XTERM_THEME = {
-  background: "#0d1117",
+  background: "#0a0d12",
   foreground: "#e6edf3",
-  cursor: "#0d1117", // input is disabled — no blinking cursor to mislead
+  cursor: "#0a0d12", // input is disabled — no blinking cursor to mislead
   selectionBackground: "#30363d",
-  black: "#0d1117",
+  black: "#0a0d12",
   red: "#f85149",
   green: "#3fb950",
   yellow: "#d29922",
@@ -56,6 +65,13 @@ export default function Terminal({
   onClear,
   running = false,
   disabled = false,
+  // How the last run ended, from lib/runStatus.js. Null before anything has
+  // been run in this task's console.
+  runStatus = null,
+  // Fill the workspace. Owned by App (it also hides the editor row), so the
+  // console and the layout can never disagree about which state they are in.
+  maximized = false,
+  onToggleMaximize,
 }) {
   const hostRef = useRef(null);
   const termRef = useRef(null);
@@ -72,9 +88,11 @@ export default function Terminal({
       disableStdin: true,         // batch input model — not a live TTY
       cursorBlink: false,
       fontFamily: '"Cascadia Code", ui-monospace, Consolas, monospace',
-      fontSize: 13,
-      lineHeight: 1.25,
-      scrollback: 2000,
+      fontSize: 14,
+      lineHeight: 1.35,
+      // A long-running loop can print a lot; 5000 lines of scrollback is what
+      // makes "scroll back through the run" a real answer rather than advice.
+      scrollback: 5000,
       theme: XTERM_THEME,
     });
     const fit = new FitAddon();
@@ -90,15 +108,18 @@ export default function Terminal({
         /* host not laid out yet — the next resize will fit */
       }
     };
-    // The pane is inside a flex/split layout; wait a frame for its real size.
+    // The pane is inside a flex/split layout and can be dragged or maximized at
+    // any time, so the ResizeObserver is what keeps the columns/rows correct at
+    // every size — not just at mount.
     const raf = requestAnimationFrame(doFit);
     const ro = new ResizeObserver(doFit);
     ro.observe(host);
 
-    term.writeln(`${ANSI.dim}CoDecep console — program output only.${ANSI.reset}`);
+    term.writeln(`${ANSI.cyan}${ANSI.bold}CoDecep terminal${ANSI.reset}${ANSI.dim} — program output only.${ANSI.reset}`);
     term.writeln(
-      `${ANSI.dim}Enter your program's inputs on the right, then press Run Code.${ANSI.reset}`
+      `${ANSI.dim}Batch execution: type every input your program reads into "Program input", then press Run Code.${ANSI.reset}`
     );
+    term.writeln(`${ANSI.dim}$${ANSI.reset}`);
 
     return () => {
       cancelAnimationFrame(raf);
@@ -135,37 +156,62 @@ export default function Terminal({
     term.scrollToBottom();
   }, [events]);
 
+  // Re-fit whenever the pane's mode changes: maximizing swaps the pane's height
+  // in one frame, and xterm sizes its grid in columns/rows, not pixels.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      try {
+        fitRef.current?.fit();
+      } catch {
+        /* laid out on the next resize */
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [maximized]);
+
+  const status = running ? RUNNING_STATUS : runStatus ?? IDLE_STATUS;
+
   return (
-    <div className="console-pane">
+    <div className={`console-pane ${maximized ? "maximized" : ""}`}>
       <div className="console-bar">
-        <span className="console-title">Console</span>
-        <span className={`console-run-status ${running ? "is-running" : ""}`}>
-          {running ? (
-            <>
-              <span className="spinner" aria-hidden="true" />
-              Running…
-            </>
-          ) : (
-            "Idle"
-          )}
+        <span className="console-title">Terminal</span>
+        <span className="console-tag" title="Program output and compiler messages for this task.">
+          output
         </span>
-        <button className="console-clear" onClick={onClear} disabled={running}>
+
+        {/* The run-status line: how the LAST run ended, in words. Colour is
+            emphasis only — the label is the meaning. */}
+        <span className={`console-run-status ${status.state}`}>
+          {running && <span className="spinner" aria-hidden="true" />}
+          {status.label}
+        </span>
+
+        <button
+          className="console-btn"
+          onClick={onClear}
+          disabled={running}
+          title="Clear the console. Each run also clears it, so repeated runs stay readable."
+        >
           Clear
+        </button>
+        <button
+          className="console-btn"
+          onClick={onToggleMaximize}
+          title={maximized ? "Restore the editor" : "Expand the terminal to fill the workspace"}
+          aria-pressed={maximized}
+        >
+          {maximized ? "⤡ Restore" : "⤢ Maximize"}
         </button>
       </div>
 
       <div className="console-body">
-        <div className="console-xterm" ref={hostRef} />
+        <div className="console-output">
+          <div className="console-xterm" ref={hostRef} />
+        </div>
 
         <div className="console-stdin">
           <label className="console-stdin-label" htmlFor="stdin-box">
             Program input (stdin)
-            <span
-              className="console-hint"
-              title="Enter all inputs your program will read, in order — one per line. Inputs are provided before the program runs (batch execution)."
-            >
-              ⓘ
-            </span>
           </label>
           <textarea
             id="stdin-box"
@@ -176,8 +222,12 @@ export default function Terminal({
             spellCheck={false}
             placeholder={"5\n7"}
           />
+          {/* Honest framing, unchanged (CLAUDE.md §7.4): this is batch
+              execution, so every input goes in BEFORE the run. Stated as how it
+              works, not as an apology, and never implying live interactivity. */}
           <p className="console-stdin-note">
-            One input per line, in the order your program reads them.
+            One input per line, in the order your program reads them. Inputs are sent
+            with the run — this is batch execution, not a live shell.
           </p>
         </div>
       </div>

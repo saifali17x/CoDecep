@@ -7,6 +7,8 @@ import DvrPlayer from "../components/DvrPlayer";
 import SyllabusManager from "../components/SyllabusManager";
 import NetworkPanel from "../components/NetworkPanel";
 import TaskReport from "../components/TaskReport";
+import MetricGlossary from "../components/MetricGlossary";
+import { METRIC_INFO, describeMetric } from "../lib/metricLabels";
 import {
   metricASeverity,
   metricBSeverity,
@@ -39,14 +41,34 @@ function fmtTime(iso) {
 // Probabilistic framing: red means "flagged for instructor review" — never an
 // accusation. Color is always paired with visible text (Session 17 severity
 // scale); the full label rides in the title. Pending forensics → grey dash.
-function SeverityCell({ sev, short }) {
+function SeverityCell({ sev, short, metricKey }) {
   return (
-    <span className="sev-cell" style={{ color: LEVEL_COLORS[sev.level] }} title={sev.label}>
+    <span
+      className="sev-cell"
+      style={{ color: LEVEL_COLORS[sev.level] }}
+      // Plain name + what the metric checks + this session's verdict + the
+      // technical name, all from lib/metricLabels.js — the same wording the DVR
+      // and the per-task report use.
+      title={metricKey ? describeMetric(metricKey, sev.label) : sev.label}
+    >
       {short}
     </span>
   );
 }
 const PENDING_SEV = { level: "grey", label: "Forensics pending (session not yet submitted)" };
+
+// A plain-language column header with the technical name kept underneath in
+// small type, so the table is readable by a professor without losing the name
+// the report and the defense refer to.
+function MetricTh({ metricKey }) {
+  const info = METRIC_INFO[metricKey];
+  return (
+    <th title={`${info.plain} — ${info.desc}\n\n${info.tech}`}>
+      <span className="th-plain">{info.short}</span>
+      <span className="th-tech">{info.tech.split(" — ")[0]}</span>
+    </th>
+  );
+}
 
 export default function ClassPage() {
   const { classId } = useParams();
@@ -350,13 +372,11 @@ export default function ClassPage() {
                                   <th>Student</th>
                                   <th>Status</th>
                                   <th>Runs</th>
-                                  <th title="Metric A — Trial-and-Error">A</th>
-                                  <th title="Metric B — Linear Injection">B</th>
-                                  <th title="Metric C — Robotic Variance">C</th>
-                                  <th title="Authorship — how much of the final code came from typing">Auth</th>
-                                  <th title="Merged review signal — ANY task flagged, never an average across tasks">
-                                    Review
-                                  </th>
+                                  <MetricTh metricKey="metricA" />
+                                  <MetricTh metricKey="metricB" />
+                                  <MetricTh metricKey="metricC" />
+                                  <MetricTh metricKey="authorship" />
+                                  <MetricTh metricKey="merged" />
                                   <th title="Per-task breakdown (multi-task exams)">Tasks</th>
                                   <th>Submitted</th>
                                   <th></th>
@@ -380,6 +400,7 @@ export default function ClassPage() {
                                     <td>
                                       {s.forensicsResults ? (
                                         <SeverityCell
+                                          metricKey="metricA"
                                           sev={metricASeverity(s.runCount)}
                                           short={`${s.runCount} run${s.runCount === 1 ? "" : "s"}`}
                                         />
@@ -390,6 +411,7 @@ export default function ClassPage() {
                                     <td>
                                       {s.forensicsResults ? (
                                         <SeverityCell
+                                          metricKey="metricB"
                                           sev={
                                             s.forensicsResults.metricB?.inconclusive
                                               ? inconclusiveSeverity()
@@ -410,6 +432,7 @@ export default function ClassPage() {
                                     <td>
                                       {s.forensicsResults ? (
                                         <SeverityCell
+                                          metricKey="metricC"
                                           sev={
                                             s.forensicsResults.metricC?.inconclusive
                                               ? inconclusiveSeverity()
@@ -430,6 +453,7 @@ export default function ClassPage() {
                                     <td>
                                       {s.forensicsResults?.authorship?.flag != null ? (
                                         <SeverityCell
+                                          metricKey="authorship"
                                           sev={authorshipSeverity(
                                             s.forensicsResults.authorship.flag,
                                             s.forensicsResults.authorship.typedRatio,
@@ -454,6 +478,7 @@ export default function ClassPage() {
                                     <td>
                                       {s.forensicsResults ? (
                                         <SeverityCell
+                                          metricKey="merged"
                                           sev={mergedSeverity(
                                             s.forensicsResults.merged?.flag ?? null,
                                             s.forensicsResults.merged?.flaggedTaskCount,
@@ -530,6 +555,13 @@ export default function ClassPage() {
                                 })}
                               </tbody>
                             </table>
+                          )}
+                          {/* The columns above are abbreviated to fit; this is
+                              where each one says in full what it checks. */}
+                          {sessions && sessions.length > 0 && (
+                            <MetricGlossary
+                              keys={["metricA", "metricB", "metricC", "authorship", "merged"]}
+                            />
                           )}
                         </td>
                       </tr>

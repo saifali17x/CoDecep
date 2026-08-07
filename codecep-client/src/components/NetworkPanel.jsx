@@ -108,15 +108,15 @@ export default function NetworkPanel({ klass, onSaved }) {
         />
         <span>
           Restrict this class to the addresses below
-          {!enabled && <em> — currently off, everyone can access from anywhere</em>}
+          {!enabled && (
+            <em> — currently off, everyone can access from anywhere</em>
+          )}
         </span>
       </label>
 
       <p className="field-hint">
-        When on, students can only OPEN an exam in this class from an allowed address.
-        This deters casual off-network access — it is <strong>not a guarantee</strong>:
-        a student using a VPN or a phone hotspot bridge can still appear to be on the
-        network. Treat it as one control among several, alongside the behavioral signals.
+        When on, students can only OPEN an exam in this class from an allowed
+        address. This deters casual off-network access.
       </p>
 
       <div className="network-add">
@@ -136,7 +136,11 @@ export default function NetworkPanel({ klass, onSaved }) {
           }}
           aria-label="IP address or CIDR range"
         />
-        <button className="btn btn-secondary" type="button" onClick={() => addRule()}>
+        <button
+          className="btn btn-secondary"
+          type="button"
+          onClick={() => addRule()}
+        >
           Add
         </button>
         {myIp && !rules.includes(myIp) && (
@@ -153,7 +157,8 @@ export default function NetworkPanel({ klass, onSaved }) {
       {entryError && <p className="form-error">{entryError}</p>}
       {myIp && (
         <p className="field-hint">
-          The server sees your requests coming from <code className="mono">{myIp}</code>.
+          The server sees your requests coming from{" "}
+          <code className="mono">{myIp}</code>.
         </p>
       )}
 
@@ -162,9 +167,14 @@ export default function NetworkPanel({ klass, onSaved }) {
       ) : (
         <ul className="network-list">
           {rules.map((rule) => (
-            <li key={rule} className={`network-chip ${rule.includes("/") ? "range" : "exact"}`}>
+            <li
+              key={rule}
+              className={`network-chip ${rule.includes("/") ? "range" : "exact"}`}
+            >
               <code className="mono">{rule}</code>
-              <span className="network-chip-kind">{rule.includes("/") ? "range" : "single"}</span>
+              <span className="network-chip-kind">
+                {rule.includes("/") ? "range" : "single"}
+              </span>
               <button
                 type="button"
                 className="network-chip-remove"
@@ -180,8 +190,8 @@ export default function NetworkPanel({ klass, onSaved }) {
 
       {wouldLockEveryoneOut && (
         <p className="form-error">
-          Add at least one address before turning the restriction on — an empty list
-          would block every student, including you.
+          Add at least one address before turning the restriction on — an empty
+          list would block every student, including you.
         </p>
       )}
       {error && <p className="form-error">{error}</p>}

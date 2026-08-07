@@ -96,3 +96,26 @@
   margin-right: var(--sp-2);
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Plain-language metric column headers (UI polish part 1) ──────────────────
+   A forensic column now leads with a name a professor can read ("Rhythm",
+   "Typed vs pasted") and keeps the technical name ("Metric C", "Authorship")
+   underneath in small type — reachable for the report and the defense rather
+   than replaced by the plain name. One shared rule, so the session table and
+   the per-task report present the same header the same way. */
+.th-plain {
+  display: block;
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.th-tech {
+  display: block;
+  margin-top: 1px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}

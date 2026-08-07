@@ -37,14 +37,39 @@ body.is-splitting .split-divider {
   background: var(--accent, #388bfd);
 }
 
+/* Editor/console divider (UI polish part 1) — the vertical twin of the PDF
+   handle above. The console is a first-class element of the exam IDE, so its
+   share of the column is the student's decision rather than a constant. */
+.console-divider {
+  flex: 0 0 5px;
+  cursor: row-resize;
+  background: var(--border, #30363d);
+  transition: background var(--transition, 0.15s ease);
+}
+.console-divider:hover,
+body.is-splitting-v .console-divider {
+  background: var(--accent, #388bfd);
+}
+
+/* Maximized console: the editor row steps aside entirely and the console fills
+   the workspace. The task tabs stay, so a multi-task exam never loses its
+   navigation to a full-screen terminal. */
+.main-content.console-maximized > .editor-row { display: none; }
+
 /* While dragging, don't let the editor/PDF steal the pointer or select text. */
 body.is-splitting {
   cursor: col-resize;
   user-select: none;
 }
+body.is-splitting-v {
+  cursor: row-resize;
+  user-select: none;
+}
 body.is-splitting iframe,
 body.is-splitting .pdf-column,
-body.is-splitting .main-content {
+body.is-splitting .main-content,
+body.is-splitting-v .editor-row,
+body.is-splitting-v .console-body {
   pointer-events: none;
 }
 

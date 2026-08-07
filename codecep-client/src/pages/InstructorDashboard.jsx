@@ -3,9 +3,11 @@ import { useSearchParams } from "react-router-dom";
 import socket from "../socket";
 import AppShell from "../components/AppShell";
 import DvrPlayer from "../components/DvrPlayer";
+import MetricGlossary from "../components/MetricGlossary";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
 import { debugLog } from "../debug";
+import { alertTypeInfo, alertPlainName } from "../lib/metricLabels";
 import "../components/Dashboard.css"; // .dash-status / .dash-table / .session-link
 import "./MonitorGrid.css";
 
@@ -231,7 +233,7 @@ export default function InstructorDashboard() {
                   </span>
                   <span className="tile-sub">
                     {t.lv
-                      ? `${t.lv.lastType} · ${fmt(t.lv.lastAt)}`
+                      ? `${alertPlainName(t.lv.lastType)} · ${fmt(t.lv.lastAt)}`
                       : t.status === "NOT_STARTED"
                         ? "not started"
                         : t.status === "SUBMITTED"
@@ -274,7 +276,13 @@ export default function InstructorDashboard() {
                 {alerts.map((a, i) => (
                   <tr key={i}>
                     <td>{fmt(a.timestamp)}</td>
-                    <td style={{ color: TYPE_COLORS[a.type] ?? "#fff" }}>{a.type}</td>
+                    {/* Plain language first, the raw event name underneath —
+                        the log stays greppable against the stored tier1_log
+                        while reading as English. Wording: lib/metricLabels.js. */}
+                    <td style={{ color: TYPE_COLORS[a.type] ?? "#fff" }} title={alertTypeInfo(a.type)?.desc}>
+                      {alertPlainName(a.type)}
+                      <span className="alert-type-tech mono">{a.type}</span>
+                    </td>
                     <td>{a.studentId}</td>
                     <td>
                       {a.sessionId ? (
@@ -295,6 +303,10 @@ export default function InstructorDashboard() {
             </table>
             </div>
           )}
+          {/* What each live event actually means, in the same words the DVR
+              and the reports use. Tier-1 events only — no metric is computed
+              here; this screen shows what fired, not what was inferred. */}
+          <MetricGlossary keys={[]} includeTier1 />
         </details>
       </div>
     </AppShell>
