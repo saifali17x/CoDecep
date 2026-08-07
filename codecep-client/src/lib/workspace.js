@@ -79,6 +79,55 @@ export function createWorkspace(initialCode = "") {
   return [{ name: ENTRY_FILE, content: initialCode }];
 }
 
+// ── Restoring a workspace after a refresh (gap-fixes part 2, Fix 2) ─────────
+// The student's code comes back from the last DATABASE FLUSH, so what is put on
+// screen is by construction what the forensic record holds — there is no
+// browser-storage copy that could drift from it. These builders are pure and
+// are applied BEFORE the editor mounts, which is what keeps the restore free of
+// telemetry: Monaco opens already holding the restored text, so no content
+// change is ever reported for it (see App.jsx and EditorPane's prevCode anchor).
+
+/**
+ * One task's workspace from a flushed snapshot: { fileName: text } → the
+ * `[{ name, content }]` shape the editor holds.
+ *
+ * Defensive about what it accepts because the snapshot is data read back out of
+ * the database rather than something just constructed: a name that no longer
+ * passes the file rules is dropped rather than reintroduced into the workspace,
+ * and main.cpp is guaranteed to exist because the build (`g++ *.cpp`) has to
+ * have an entry point. Returns null when there is nothing worth restoring, so
+ * the caller can fall back to a blank workspace instead of an empty file list.
+ */
+export function filesFromSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const files = [];
+  for (const [name, content] of Object.entries(snapshot)) {
+    if (typeof content !== "string") continue;
+    if (validateFileName(name, files.map((f) => f.name)) !== null) continue;
+    files.push({ name, content });
+    if (files.length >= MAX_FILES) break;
+  }
+  if (files.length === 0) return null;
+  if (!files.some((f) => f.name === ENTRY_FILE)) files.push({ name: ENTRY_FILE, content: "" });
+  return sortFiles(files);
+}
+
+/**
+ * Every task's workspace for an exam, restoring what was flushed and opening
+ * blank where nothing was.
+ *
+ * `taskIds` (from the assignment's taskCount) decides the shape, never the
+ * snapshot: a task the student never opened still gets its blank workspace, and
+ * a snapshot for a task outside this exam is ignored rather than growing a tab
+ * that does not exist.
+ */
+export function restoreWorkspaces(taskIds, taskSnapshots, initialCode = "") {
+  const byTask = taskSnapshots && typeof taskSnapshots === "object" ? taskSnapshots : {};
+  return Object.fromEntries(
+    taskIds.map((id) => [id, filesFromSnapshot(byTask[id]) ?? createWorkspace(initialCode)]),
+  );
+}
+
 // ── Tasks (multi-task exams, Prompt 1) ──────────────────────────────────────
 // An exam can be a midterm with N questions. A TASK is deliberately
 // lightweight: an id, a label, and its OWN file workspace — same file rules,

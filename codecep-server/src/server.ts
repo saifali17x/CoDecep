@@ -21,6 +21,7 @@ import {
   describeViolations,
 } from './ast/allowlist'
 import { buildZip } from './lib/zip'
+import { decideSessionAction, buildRestorePayload } from './lib/sessionLifecycle'
 import {
   validateWorkspace,
   buildCompileScript,
@@ -349,16 +350,63 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }))
 
 // ── POST /api/session/create ──────────────────────────────────────────────
+// Session identity is (student, ASSIGNMENT) — gap #12.
+//
+// This used to key on `studentId` alone: any lingering IN_PROGRESS row was
+// reused for whatever assignment the student opened next, so their telemetry
+// was filed under the WRONG assignmentId, the new assignment's roster read
+// NOT_STARTED, and a reload landed on a row that already held a whole other
+// exam — the "phantom duplicate" that repeatedly made correct builds look buggy
+// during testing.
+//
+// The rule now, decided by `decideSessionAction` (unit-tested, lib/sessionLifecycle):
+//   same student + same assignment, SUBMITTED    → ALREADY_SUBMITTED (locked, never a second attempt)
+//   same student + same assignment, IN_PROGRESS  → RESUME the same row (reopen/reload)
+//   otherwise                                    → a fresh session
+// A row belonging to a DIFFERENT assignment is never a candidate: the lookup
+// filters on assignmentId, so it simply isn't in the list. Different assignment
+// = different session, always.
 app.post('/api/session/create', validate(sessionCreateSchema), async (req: Request, res: Response) => {
   const { studentId, userId, assignmentId } = req.body
+  const hasAssignment = typeof assignmentId === 'string' && assignmentId.length > 0
+  const hasUserId = typeof userId === 'string' && userId.length > 0
+
+  // Who this student is, tolerant of every row shape in the database: a session
+  // opened through ExamPage carries userId AND studentId (the username), while
+  // the oldest dev rows carry studentId only. Usernames are unique, so matching
+  // either identifier is safe and no legacy row is stranded.
+  const identity = hasUserId ? { OR: [{ userId }, { studentId }] } : { studentId }
 
   try {
+    // `assignmentId: null` is deliberate on the no-assignment (/legacy) path:
+    // "no assignment" is its own bucket, so the dev flow can never adopt a real
+    // exam's row — which is the other half of gap #12.
     const existing = await withRetry(() =>
-      prisma.session.findFirst({ where: { studentId, status: 'IN_PROGRESS' } })
+      prisma.session.findMany({
+        where: hasAssignment ? { assignmentId, ...identity } : { assignmentId: null, ...identity },
+        orderBy: { updatedAt: 'desc' },
+        select: { id: true, status: true },
+      })
     )
-    if (existing) {
-      debugLog(`[SESSION] Returning existing session ${existing.id} for ${studentId}`)
-      res.json({ sessionId: existing.id })
+
+    // ALREADY_SUBMITTED applies to real assignments only. The /legacy dev flow
+    // has years of submitted student-001 rows behind it, so treating those as a
+    // lock would make the dev exam permanently unopenable; there, only an open
+    // session is a candidate and the behavior is exactly what it always was.
+    const candidates = hasAssignment ? existing : existing.filter((s) => s.status === 'IN_PROGRESS')
+    const decision = decideSessionAction(candidates)
+
+    if (decision.action === 'ALREADY_SUBMITTED') {
+      debugLog(`[SESSION] ${studentId} already submitted assignment ${assignmentId} (${decision.sessionId})`)
+      res.json({ sessionId: decision.sessionId, status: 'ALREADY_SUBMITTED', resumed: false })
+      return
+    }
+    if (decision.action === 'RESUME') {
+      debugLog(
+        `[SESSION] Resuming session ${decision.sessionId} for ${studentId}` +
+          (hasAssignment ? ` on assignment ${assignmentId}` : ' (no assignment / legacy)')
+      )
+      res.json({ sessionId: decision.sessionId, status: 'RESUMED', resumed: true })
       return
     }
 
@@ -373,13 +421,95 @@ app.post('/api/session/create', validate(sessionCreateSchema), async (req: Reque
           // never confuse the two.
           tier1_log: [],
           // Backward compatible: the hardcoded student-001 dev flow sends neither.
-          ...(typeof userId === 'string' && userId.length > 0 ? { userId } : {}),
-          ...(typeof assignmentId === 'string' && assignmentId.length > 0 ? { assignmentId } : {}),
+          ...(hasUserId ? { userId } : {}),
+          ...(hasAssignment ? { assignmentId } : {}),
         },
       })
     )
-    debugLog(`[SESSION] Created new session ${session.id} for ${studentId}`)
-    res.json({ sessionId: session.id })
+    debugLog(
+      `[SESSION] Created new session ${session.id} for ${studentId}` +
+        (hasAssignment ? ` on assignment ${assignmentId}` : '')
+    )
+    res.json({ sessionId: session.id, status: 'CREATED', resumed: false })
+  } catch (err) {
+    if (isTransientDbError(err)) {
+      res.status(503).json({ error: 'Service temporarily unavailable, please retry' })
+      return
+    }
+    throw err
+  }
+})
+
+// ── GET /api/session/:id/restore ───────────────────────────────────────────
+// Put the student's code back after a refresh (gap #4).
+//
+// The restore reads the last FLUSHED workspace out of `playback_log`, NOT a
+// browser copy. The database is the source of truth, so what comes back on
+// screen is by construction what the forensic record says the student had —
+// there is no second store to drift from it, and nothing to reconcile if the
+// two ever disagreed. The honest cost is the up-to-30s of typing since the last
+// flush, which the client states plainly rather than hiding.
+//
+// This is DISPLAY state only. It creates no telemetry, and the client seeds the
+// editor before Monaco mounts so the restored text is never captured as input
+// (see App.jsx / EditorPane's prevCode anchor). The session keeps appending
+// telemetry exactly where it left off.
+//
+// Student-owned: this returns a student's own source code, so it is
+// `requireAuth` plus an explicit ownership check — never readable by guessing a
+// session id or a username.
+app.get('/api/session/:id/restore', requireAuth, async (req: Request, res: Response) => {
+  try {
+    // The whole log is read to recover each task's latest snapshot. This runs
+    // once per exam open (never on a hot path), the same read the replay route
+    // already performs.
+    const session = await withRetry(() =>
+      prisma.session.findUnique({
+        where: { id: String(req.params.id) },
+        select: { id: true, studentId: true, status: true, userId: true, playback_log: true },
+      })
+    )
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' })
+      return
+    }
+
+    // Ownership. `userId` is the modern link; the fallback covers rows whose
+    // identity is only the username (studentId), so a legacy session is
+    // restorable by its real owner and by nobody else.
+    let owns = Boolean(session.userId && session.userId === req.user!.userId)
+    if (!owns) {
+      const me = await withRetry(() =>
+        prisma.user.findUnique({ where: { id: req.user!.userId }, select: { username: true } })
+      )
+      owns = Boolean(me && me.username === session.studentId)
+    }
+    if (!owns) {
+      res.status(403).json({ error: 'This is not your session.' })
+      return
+    }
+
+    // Immune Phase: a submitted session is never restored into an editable
+    // state. The client opens it locked; this is the backstop, not the guard.
+    if (session.status !== 'IN_PROGRESS') {
+      res.json({
+        sessionId: session.id,
+        status: session.status,
+        restorable: false,
+        taskSnapshots: {},
+        restoredFrom: null,
+        lastActive: null,
+        windowCount: 0,
+      })
+      return
+    }
+
+    const payload = buildRestorePayload(session.playback_log)
+    debugLog(
+      `[RESTORE] session ${session.id} — ${Object.keys(payload.taskSnapshots).length} task(s)` +
+        ` from ${payload.windowCount} window(s)`
+    )
+    res.json({ sessionId: session.id, status: session.status, restorable: true, ...payload })
   } catch (err) {
     if (isTransientDbError(err)) {
       res.status(503).json({ error: 'Service temporarily unavailable, please retry' })

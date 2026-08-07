@@ -137,6 +137,38 @@ body.is-splitting .main-content {
   color: var(--warning, #d29922);
 }
 
+/* Code restored after a refresh (gap-fixes part 2). Deliberately quiet: this
+   is a statement of what happened, not an alert — a student mid-exam should
+   read it once and get back to work. It carries the ~30s caveat in words
+   because the restore genuinely cannot include unflushed typing. */
+.restore-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3, 12px);
+  padding: 8px 16px;
+  font-size: var(--fs-sm, 12px);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  background: var(--surface-2, #161b22);
+  color: var(--text-secondary, #8b949e);
+  border-bottom: 1px solid var(--border, #30363d);
+  flex-shrink: 0;
+}
+.restore-banner-dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #8b949e);
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+}
+.restore-banner-dismiss:hover {
+  background: var(--surface-3, #21262d);
+  color: var(--text-primary, #e6edf3);
+}
+
 /* Responsive sanity: on a narrow screen the split stacks (PDF above the
    editor) instead of squeezing both panes unreadably. The divider is hidden
    because horizontal dragging is meaningless in a column layout. */

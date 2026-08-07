@@ -16,6 +16,11 @@ export default function ExamPage() {
   const [assignment, setAssignment] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
+  // The workspace to open with, restored from the last DB flush when this
+  // session is being RESUMED (gap #4). Resolved here, before <App/> renders, so
+  // the editor is seeded rather than programmatically written to after mount —
+  // that ordering is what keeps the restore out of the telemetry entirely.
+  const [restore, setRestore] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -34,15 +39,43 @@ export default function ExamPage() {
           setAlreadySubmitted(true);
           return;
         }
-        // 2. Create a session tied to this student + assignment.
-        const { sessionId: sid } = await apiFetch("/api/session/create", {
+        // 2. Resolve THIS student's session for THIS assignment. Since the
+        //    gap #12 fix the server keys on (student, assignment): the same
+        //    pair reopened resumes the same row, a different assignment always
+        //    gets its own, and a submitted pair comes back locked instead of
+        //    silently starting a second attempt.
+        const created = await apiFetch("/api/session/create", {
           method: "POST",
           token,
           body: { studentId: user.username, userId: user.id, assignmentId },
         });
         if (cancelled) return;
+        if (created.status === "ALREADY_SUBMITTED") {
+          // Belt and braces with the mySubmittedSession branch above — that one
+          // reads the assignment, this one reads the session rows themselves,
+          // and neither may quietly hand back an editable session.
+          setAssignment(a);
+          setSessionId(created.sessionId);
+          setAlreadySubmitted(true);
+          return;
+        }
+
+        // 3. Resuming? Put the student's code back from the last DB flush.
+        //    Best-effort: a failure here costs the restore, never the exam, so
+        //    the worst case is the blank editor they had before this existed.
+        let restored = null;
+        if (created.resumed) {
+          try {
+            const r = await apiFetch(`/api/session/${created.sessionId}/restore`, { token });
+            if (r.restorable && r.restoredFrom) restored = r;
+          } catch (err) {
+            console.warn("[EXAM] could not restore previous code:", err?.message ?? err);
+          }
+        }
+        if (cancelled) return;
+        setRestore(restored);
         setAssignment(a);
-        setSessionId(sid);
+        setSessionId(created.sessionId);
       } catch (err) {
         if (!cancelled) setError(err.message);
       }
@@ -94,6 +127,11 @@ export default function ExamPage() {
       // still cover the lot. Absent on assignments created before this
       // feature — those default to the single-task exam they already were.
       taskCount={assignment.taskCount ?? 1}
+      // Gap #4: the workspace this session last flushed, or null for a fresh
+      // one (which opens blank as it always did). App seeds its state from
+      // this, so the restored text is present from the editor's first frame
+      // and is never captured as input.
+      restore={restore}
     />
   );
 }

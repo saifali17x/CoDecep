@@ -10,12 +10,12 @@ import { debugLog } from "./debug";
 import * as liveStream from "./lib/liveStream";
 import {
   ENTRY_FILE,
-  createWorkspace,
   kindOf,
   languageOf,
   makeTaskIds,
   outputKey,
   outputNameOf,
+  restoreWorkspaces,
   sortFiles,
   taskLabel,
 } from "./lib/workspace";
@@ -68,6 +68,13 @@ function App({
   // its own file workspace behind its own tab. 1 (the default, and every
   // pre-multi-task assignment) is the single-workspace exam as it was.
   taskCount = 1,
+  // Code restore after a refresh (gap-fixes part 2, Fix 2). ExamPage resolves
+  // this from GET /api/session/:id/restore BEFORE rendering the IDE — which is
+  // exactly what makes the restore telemetry-free: the workspace below is
+  // SEEDED with the restored text, so Monaco opens already holding it and no
+  // content change is ever reported. Null on a fresh session (open blank) and
+  // on the propless /legacy flow.
+  restore = null,
 } = {}) {
   // Effective values: props (real identity from ExamPage) fall back to the
   // hardcoded module consts so the propless /legacy dev flow is unchanged.
@@ -91,21 +98,45 @@ function App({
   // lookup and nothing can drift out of step.
   const taskIds = useMemo(() => makeTaskIds(taskCount), [taskCount]);
   const isMultiTask = taskIds.length > 1;
-  const [tasks, setTasks] = useState(() =>
-    Object.fromEntries(
-      makeTaskIds(taskCount).map((id) => [
+  const [tasks, setTasks] = useState(() => {
+    const ids = makeTaskIds(taskCount);
+    // Restored from the last DB flush when this session is being resumed, blank
+    // otherwise. Seeding here — in the state INITIALIZER, before the first
+    // render — is the whole no-phantom-telemetry mechanism: the editor's first
+    // value IS the restored text, so there is no programmatic set for the
+    // capture engine to see and no baseline for it to measure a delta against.
+    const restored = restoreWorkspaces(ids, restore?.taskSnapshots, initialCode);
+    const lastFile = restore?.lastActive?.fileName ?? null;
+    const lastTask = restore?.lastActive?.taskId ?? null;
+    return Object.fromEntries(
+      ids.map((id) => [
         id,
         {
-          files: createWorkspace(initialCode),
-          activeFile: ENTRY_FILE,
+          files: restored[id],
+          // Reopen on the file the student was last typing in, but only in the
+          // task it belonged to and only if that file still exists.
+          activeFile:
+            id === lastTask && lastFile && restored[id].some((f) => f.name === lastFile)
+              ? lastFile
+              : ENTRY_FILE,
           outputFiles: [],
           consoleEvents: [],
           stdin: "",
         },
       ]),
-    ),
+    );
+  });
+  const [activeTask, setActiveTask] = useState(() => {
+    const last = restore?.lastActive?.taskId;
+    return last && taskIds.includes(last) ? last : taskIds[0];
+  });
+  // The honest restore notice: the DB is the source of truth, so anything typed
+  // since the last flush (up to ~30s) is genuinely not in it. Say so plainly
+  // rather than implying everything came back. Dismissible — it is information,
+  // not a warning to sit through.
+  const [restoreNotice, setRestoreNotice] = useState(
+    typeof restore?.restoredFrom === "number" ? restore.restoredFrom : null,
   );
-  const [activeTask, setActiveTask] = useState(taskIds[0]);
 
   // Everything on screen belongs to the ACTIVE task. Derived, never duplicated,
   // for the same reason the active buffer is derived from `files`: one source
@@ -676,6 +707,24 @@ function App({
         title={assignmentTitle}
         labMode={assignmentTitle ? LAB_MODE_EFFECTIVE : undefined}
       />
+      {!isSubmitted && restoreNotice !== null && (
+        <div className="restore-banner">
+          <span>
+            Restored your code from your last save at{" "}
+            {new Date(restoreNotice).toLocaleTimeString()} — up to the last ~30 seconds of
+            typing before you left may not be included.
+          </span>
+          <button
+            type="button"
+            className="restore-banner-dismiss"
+            onClick={() => setRestoreNotice(null)}
+            aria-label="Dismiss restore notice"
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {isSubmitted && (
         <div className={`submit-banner ${submitOutcome === "ALREADY_SUBMITTED" ? "already" : "fresh"}`}>
           {submitOutcome === "ALREADY_SUBMITTED"

@@ -37,6 +37,20 @@ model Session {
   user         User?       @relation(fields: [userId], references: [id])
   assignment   Assignment? @relation(fields: [assignmentId], references: [id])
 
+  // Gap-fixes part 2 — a session is identified by (student, ASSIGNMENT), and
+  // these are the lookups the exam-open path now makes. Both identifiers are
+  // indexed because a row's identity may be either: modern rows carry userId,
+  // the oldest carry only studentId (the username).
+  //
+  // Deliberately NOT unique. Pre-fix rows in the live database already violate
+  // "one session per student per assignment" (the very damage gap #12 caused),
+  // and those rows are forensic records of real exams — a unique constraint
+  // could only be applied by destroying or merging them. The invariant is
+  // enforced in application logic instead (lib/sessionLifecycle), which takes a
+  // LIST of matching rows and resolves by rule precisely so historical
+  // duplicates resolve sensibly rather than crashing.
+  @@index([assignmentId, userId])
+  @@index([assignmentId, studentId])
   @@map("sessions")
 }
 
