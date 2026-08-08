@@ -4,9 +4,13 @@ node_modules/
 # Build output
 dist/
 
-# Environment files — never commit secrets
+# Environment files — never commit secrets.
+# .env.local is the ACTIVE local file and holds the real local Postgres
+# password. .env.example and .env.production are TEMPLATES (placeholders only)
+# and ARE committed — they document which variables each environment needs.
 .env
 .env.local
+.env.*.local
 
 # Prisma generated client (regenerated via prisma generate)
 node_modules/.prisma/

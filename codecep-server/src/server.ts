@@ -1,6 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express'
 import cors from 'cors'
-import dotenv from 'dotenv'
 import fs from 'fs'
 import path from 'path'
 import { createServer } from 'http'
@@ -13,6 +12,10 @@ import bcrypt from 'bcryptjs'
 import multer from 'multer'
 import rateLimit from 'express-rate-limit'
 import { PDFParse } from 'pdf-parse'
+// First local import: every other module that reads process.env at import time
+// loads it too, but keeping it first makes the ordering intentional rather than
+// accidental. Local dev = .env.local; production = Heroku config vars.
+import { loadEnv, describeEnvSource } from './env'
 import { validateAST } from './ast/parser'
 import {
   BASELINE_ALLOWLIST,
@@ -87,7 +90,7 @@ import {
   telemetrySubmitSchema,
 } from './validation'
 
-dotenv.config()
+loadEnv()
 
 const app = express()
 const PORT = process.env.PORT ?? 3001
@@ -2439,4 +2442,7 @@ io.on('connection', (socket) => {
 
 httpServer.listen(PORT, () => {
   console.log(`CoDecep Ingestion Gateway → http://localhost:${PORT}`)
+  // Names the config source and the database it resolved to, with credentials
+  // stripped — so a run against the wrong database is visible in one line.
+  console.log(`[STARTUP] env: ${describeEnvSource()}`)
 })

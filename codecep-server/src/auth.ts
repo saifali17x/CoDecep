@@ -1,16 +1,17 @@
-import dotenv from 'dotenv'
 import jwt from 'jsonwebtoken'
 import { Request, Response, NextFunction } from 'express'
 
 // Imports are hoisted, so this module evaluates before server.ts's own
-// dotenv.config() call runs — load .env here so JWT_SECRET is available.
-dotenv.config()
+// loadEnv() call runs — load the env files here so JWT_SECRET is available.
+import { loadEnv } from './env'
+loadEnv()
 
 // ── JWT helpers ────────────────────────────────────────────────────────────
-// JWT_SECRET must be in .env. If missing, throw at startup so the error is
-// obvious rather than silent.
+// JWT_SECRET must be set (.env.local locally, a Heroku config var in
+// production). If missing, throw at startup so the error is obvious rather
+// than silent.
 const secretFromEnv = process.env.JWT_SECRET
-if (!secretFromEnv) throw new Error('JWT_SECRET is not set in .env')
+if (!secretFromEnv) throw new Error('JWT_SECRET is not set (.env.local locally, config var in production)')
 const JWT_SECRET: string = secretFromEnv
 
 export function signToken(payload: { userId: string; role: string }): string {

@@ -1,4 +1,3 @@
-import dotenv from 'dotenv'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 // Injected into the prompt from the SAME constant the validator enforces, so
 // the two can never drift. Note this is belt-and-braces: a generated list that
@@ -8,12 +7,14 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 import { BASELINE_ALLOWLIST } from './ast/allowlist'
 
 // Imports are hoisted, so this module evaluates before server.ts's own
-// dotenv.config() call runs — load .env here so GEMINI_API_KEY is available.
-dotenv.config()
+// loadEnv() call runs — load the env files here so GEMINI_API_KEY is available.
+import { loadEnv } from './env'
+loadEnv()
 
-// GEMINI_API_KEY must be in .env. Never print or log the key itself.
+// GEMINI_API_KEY must be set (.env.local locally, a Heroku config var in
+// production). Never print or log the key itself.
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY
-if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set in .env')
+if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set (.env.local locally, config var in production)')
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY)
 // gemini-flash-latest: alias tracking the current flash model — fast, cheap,
