@@ -41,7 +41,9 @@ export interface PlaybackEvent {
   rangeOffset?: number
   rangeLength?: number
   insertedText?: string
-  changes?: { o: number; d: number; t: string }[]
+  /** True length when `insertedText` was capped at capture time. */
+  insertedTextTruncated?: number
+  changes?: { o: number; d: number; t: string; trunc?: number }[]
   /**
    * Multi-task exams (Prompt 1) — which task of the exam this keystroke belongs
    * to. Optional for exactly the same reason `fileName` is: every session
@@ -49,6 +51,33 @@ export interface PlaybackEvent {
    * task" rather than "unknown".
    */
   taskId?: string | null
+}
+
+/**
+ * How many characters this event INSERTED, independent of what it replaced.
+ *
+ * `charDelta` is a NET figure (inserted − deleted), which is the right number
+ * for "how much did the program grow" and the WRONG one for "how much content
+ * arrived here". A paste over selected text reports both at once — pasting 256
+ * characters over a selected 227 gives `charDelta` 29 — so every consumer that
+ * asked `charDelta` how big a paste was got the net, and a paste that replaced
+ * a similar amount of text read as almost nothing. That is the paste-replace
+ * bug: the deletion of the old content silently cancelled the new paste.
+ *
+ * Derived, never stored. Exact capture (Session 24) already records the
+ * inserted text, and CLAUDE.md's rule is that a new per-event field costs bytes
+ * on every keystroke of every exam forever — so inserted counts are re-derived
+ * at read time instead. A pre-v2 event carries no edit list and falls back to
+ * `charDelta`, which is exactly what it always used, so old rows are unchanged.
+ */
+export function insertedCharsOf(event: PlaybackEvent): number {
+  if (Array.isArray(event.changes)) {
+    return event.changes.reduce((n, c) => n + (c.trunc ?? c.t?.length ?? 0), 0)
+  }
+  if (typeof event.insertedText === 'string') {
+    return event.insertedTextTruncated ?? event.insertedText.length
+  }
+  return Math.max(0, event.charDelta)
 }
 
 export interface PlaybackEntry {
@@ -501,9 +530,18 @@ export function computeAuthorship(playbackLog: unknown, finalCodeLength: number)
   const typedChars = allEvents
     .filter((e) => e.actionType === 'type' && e.charDelta > 0)
     .reduce((sum, e) => sum + e.charDelta, 0)
+  // A paste is counted by what it INSERTED, not by its net delta. Pasting over
+  // a selection deletes and inserts in one change, so `charDelta` nets the two
+  // and a paste replacing a similar amount of text contributed almost nothing
+  // here — a student who pasted a solution and then pasted a different one over
+  // it scored the second paste at ~0. The deletion of the old content is a
+  // separate fact about the program's size; it is not evidence that less
+  // content was pasted. `insertedCharsOf` falls back to `charDelta` on pre-v2
+  // rows, so sessions recorded before exact capture are scored exactly as
+  // before.
   const pastedChars = allEvents
-    .filter((e) => e.actionType === 'paste' && e.charDelta > 0)
-    .reduce((sum, e) => sum + e.charDelta, 0)
+    .filter((e) => e.actionType === 'paste')
+    .reduce((sum, e) => sum + insertedCharsOf(e), 0)
 
   const denominator = Math.max(finalCodeLength, 1)
   const typedRatio = typedChars / denominator

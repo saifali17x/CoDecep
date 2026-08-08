@@ -79,6 +79,35 @@ export function changesOf(ev) {
 }
 
 /**
+ * How many characters an event INSERTED, independent of what it replaced.
+ *
+ * Mirrors the server's `insertedCharsOf` in `forensics/metrics.ts` — keep the
+ * two in step. `charDelta` is a NET figure (inserted − deleted): correct for
+ * "how much did the program grow", wrong for "how much content arrived". A
+ * paste over a selection does both in one change, so pasting 256 characters
+ * over a selected 227 nets to 29 — which is why a paste replacing previously
+ * pasted code drew no scrubber tick and read as a trivial edit.
+ *
+ * Derived rather than stored: exact capture already records the inserted text,
+ * and a new per-event field would cost bytes on every keystroke of every exam.
+ * Pre-v2 events have no edit list and fall back to `charDelta`, exactly what
+ * they always used.
+ */
+export function insertedCharsOf(ev) {
+  // Read the raw fields rather than going through changesOf(): that helper
+  // rebuilds a single change from `insertedText` and does not carry
+  // `insertedTextTruncated`, so a capped 100k insertion would be counted at its
+  // stored length instead of its real one.
+  if (Array.isArray(ev?.changes)) {
+    return ev.changes.reduce((n, c) => n + (c.trunc ?? c.t?.length ?? 0), 0);
+  }
+  if (typeof ev?.insertedText === "string") {
+    return ev.insertedTextTruncated ?? ev.insertedText.length;
+  }
+  return Math.max(0, ev?.charDelta ?? 0);
+}
+
+/**
  * Apply Monaco's edit list to a string. Monaco delivers changes sorted from the
  * END of the document backwards precisely so they can be applied in sequence
  * without re-basing offsets; that order is preserved in storage and relied on
@@ -382,10 +411,14 @@ export function buildReplay(data, opts = {}) {
         provenance: ev.provenance,
       });
 
-      if (ev.actionType === "paste" && ev.charDelta >= pasteMinChars) {
+      // Sized by what the paste INSERTED, so a paste that replaced earlier
+      // content still earns its own tick — netting the two hid the second of
+      // two pastes entirely.
+      const pastedChars = insertedCharsOf(ev);
+      if (ev.actionType === "paste" && pastedChars >= pasteMinChars) {
         pasteMarks.push({
           t,
-          charCount: ev.charDelta,
+          charCount: pastedChars,
           // offsets valid within textAt(t)
           rangeStart: seg.diff.prefix.length + prevIns,
           rangeEnd: seg.diff.prefix.length + ins,
@@ -560,12 +593,15 @@ function buildExactReplay(data, { initialText, idleGapMs, pasteMinChars }) {
     const fileName = fileOf(ev, multiTask);
     frames.push({ t, i, w: windowOf[i], fileName, actionType: ev.actionType, charDelta: ev.charDelta });
 
-    // Paste marks now carry the REAL inserted range — no interpolation.
-    if (ev.actionType === "paste" && ev.charDelta >= pasteMinChars) {
+    // Paste marks now carry the REAL inserted range — no interpolation. Sized
+    // by insertion, not net delta, so a paste over previously pasted code is
+    // still marked rather than netting away to nothing.
+    const pastedChars = insertedCharsOf(ev);
+    if (ev.actionType === "paste" && pastedChars >= pasteMinChars) {
       const ch = changesOf(ev)[0];
       pasteMarks.push({
         t,
-        charCount: ev.charDelta,
+        charCount: pastedChars,
         fileName,
         rangeStart: ch.o,
         rangeEnd: ch.o + (ch.t?.length ?? 0),

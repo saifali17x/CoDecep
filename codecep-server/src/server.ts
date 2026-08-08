@@ -67,6 +67,9 @@ import {
   // review signal (gap #31). Both are pure selectors/derivations too.
   runCountForTask,
   computeMergedReview,
+  // How many characters an event INSERTED, independent of what it replaced —
+  // the paste-replace fix. See forensics/metrics.ts.
+  insertedCharsOf,
   type AuthorshipResult,
 } from './forensics/metrics'
 import { signToken, requireAuth, requireRole, verifyToken } from './auth'
@@ -2387,11 +2390,16 @@ function summariseTier1(tier1Log: unknown, playbackLog: unknown) {
   // Legacy session: mirror the client's ILLEGAL_PASTE rule (external paste over
   // PASTE_THRESHOLD) against the stored keystroke events.
   const log = Array.isArray(playbackLog) ? (playbackLog as any[]) : []
+  // Sized by what each paste INSERTED, matching the client's gate. Using the
+  // net delta here under-counted for the same reason it did on the client: a
+  // paste over a selection nets its insertion against the text it replaced.
   const pasteAlerts = log
     .flatMap((entry) => (Array.isArray(entry?.events) ? entry.events : []))
     .filter(
       (e: any) =>
-        e?.actionType === 'paste' && e?.charDelta > PASTE_THRESHOLD && e?.provenance !== 'internal'
+        e?.actionType === 'paste' &&
+        insertedCharsOf(e) > PASTE_THRESHOLD &&
+        e?.provenance !== 'internal'
     ).length
   return { tabOut: null, illegalPaste: pasteAlerts, astViolation: null, recorded: false }
 }

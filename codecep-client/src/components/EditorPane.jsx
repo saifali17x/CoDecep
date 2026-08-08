@@ -389,7 +389,7 @@ export default function EditorPane({
         event.provenance = provenance;
         if (isSubmittedRef.current) return; // Immune Phase
         if (provenance === "internal") {
-          debugLog(`[PASTE] internal bulk insert (+${event.charDelta} chars) — no alert`);
+          debugLog(`[PASTE] internal bulk insert (+${insertedChars} chars) — no alert`);
           return;
         }
         const payload = {
@@ -397,7 +397,10 @@ export default function EditorPane({
           studentId,
           sessionId: sessionIdRef?.current ?? null,
           timestamp: event.timestamp,
-          detail: `external paste, +${event.charDelta} chars${taskLabel ? ` in ${taskLabel}` : ""}`,
+          // Inserted, not net — this path's GATE already measures the insertion
+          // (which is why drag-drop over a selection was still caught); the
+          // message was the only thing still reporting the netted figure.
+          detail: `external paste, +${insertedChars} chars${taskLabel ? ` in ${taskLabel}` : ""}`,
         };
         debugLog("[EMIT] ILLEGAL_PASTE (no paste event — drag-drop or programmatic)", payload);
         socket.emit("alert", payload);
@@ -460,7 +463,7 @@ export default function EditorPane({
     if (pending.insertedChars <= 0) return;
     if (Date.now() - pending.at > PASTE_ATTRIBUTION_WINDOW_MS) return;
 
-    const { event, contentBeforeChange } = pending;
+    const { event, contentBeforeChange, insertedChars } = pending;
     lastChangeRef.current = null; // attribute once
 
     event.actionType = "paste";
@@ -475,10 +478,18 @@ export default function EditorPane({
 
     // Tier 1 alert — ILLEGAL_PASTE. Same size gate and same Immune Phase guard
     // as before; only the classification feeding it got more accurate.
+    //
+    // The gate measures what the paste INSERTED, not its net delta. Pasting
+    // over a selection deletes and inserts in one change, so `charDelta` nets
+    // the two: pasting 256 characters over a selected 227 gave a delta of 29,
+    // which fell under this threshold and silently suppressed the alert. A
+    // student could paste a solution, select all, and paste a different one —
+    // and only the first was ever reported. What a paste replaced is a separate
+    // fact; it never reduces how much arrived.
     if (isSubmittedRef.current) return;
-    if (event.charDelta <= PASTE_THRESHOLD) return;
+    if (insertedChars <= PASTE_THRESHOLD) return;
     if (provenance === "internal") {
-      debugLog(`[PASTE] internal paste (+${event.charDelta} chars) — no alert`);
+      debugLog(`[PASTE] internal paste (+${insertedChars} chars) — no alert`);
       return;
     }
     const payload = {
@@ -486,7 +497,7 @@ export default function EditorPane({
       studentId,
       sessionId: sessionIdRef?.current ?? null,
       timestamp: event.timestamp,
-      detail: `external paste, +${event.charDelta} chars${taskLabel ? ` in ${taskLabel}` : ""}`,
+      detail: `external paste, +${insertedChars} chars${taskLabel ? ` in ${taskLabel}` : ""}`,
     };
     debugLog("[EMIT] ILLEGAL_PASTE", payload);
     socket.emit("alert", payload);

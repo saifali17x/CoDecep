@@ -5,6 +5,7 @@ import {
   FALLBACK_LEAD_IN_MS,
   replayDataForTask,
   taskIdsInReplay,
+  insertedCharsOf,
 } from "./replayEngine";
 
 // Helper: build a flush-window snapshot entry.
@@ -592,5 +593,102 @@ describe("replayDataForTask", () => {
 
   it("returns the payload unchanged when no task is selected (all-tasks view)", () => {
     expect(replayDataForTask(session, null)).toBe(session);
+  });
+});
+
+// ── The paste-replace bug: a paste over previously pasted code ─────────────
+// A paste over a selection deletes and inserts in ONE change, so `charDelta`
+// (inserted − deleted) nets the two. The scrubber sized its ticks by charDelta,
+// so pasting a 256-char block over a selected 227-char block produced a delta
+// of 29 — under the tick threshold — and the SECOND paste left no mark at all.
+// A tick is now sized by what the paste INSERTED, independent of what it
+// replaced.
+describe("buildReplay — paste marks size by insertion, not net delta", () => {
+  const BLOCK1 = "// first pasted block, comfortably over the mark threshold\nint a = 1;\n";
+  const BLOCK2 = "// second pasted block, different and also over the threshold\nlong b = 2;\n";
+
+  it("marks a paste that REPLACES an earlier paste (the bug)", () => {
+    const paste1 = xev(1000, "main.cpp", 0, 0, BLOCK1, {
+      actionType: "paste",
+      charDelta: BLOCK1.length,
+      provenance: "external",
+    });
+    // Ctrl+A then Ctrl+V: deletes all of BLOCK1, inserts BLOCK2, in one change.
+    const paste2 = xev(4000, "main.cpp", 0, BLOCK1.length, BLOCK2, {
+      actionType: "paste",
+      charDelta: BLOCK2.length - BLOCK1.length, // the netted figure
+      provenance: "external",
+    });
+    const events = [paste1, paste2];
+    const r = buildReplay(
+      { snapshots: [xsnap(9000, { "main.cpp": BLOCK2 }, events.length)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    // TWO ticks, one per paste action.
+    expect(r.pasteMarks).toHaveLength(2);
+    expect(r.pasteMarks[0].charCount).toBe(BLOCK1.length);
+    // Sized by insertion — not the small net delta that hid it before.
+    expect(r.pasteMarks[1].charCount).toBe(BLOCK2.length);
+    expect(r.pasteMarks[1].charCount).not.toBe(BLOCK2.length - BLOCK1.length);
+    expect(r.textAt(r.totalDurationMs)).toBe(BLOCK2);
+  });
+
+  it("still marks a paste into an EMPTY buffer (no regression)", () => {
+    const paste = xev(1000, "main.cpp", 0, 0, BLOCK1, {
+      actionType: "paste",
+      charDelta: BLOCK1.length,
+      provenance: "external",
+    });
+    const r = buildReplay(
+      { snapshots: [xsnap(9000, { "main.cpp": BLOCK1 }, 1)], events: [paste], openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.pasteMarks).toHaveLength(1);
+    expect(r.pasteMarks[0].charCount).toBe(BLOCK1.length);
+  });
+
+  it("still marks a paste over TYPED content (no regression)", () => {
+    const typed = typeOut("main.cpp", "int x = 0;", 1000);
+    const paste = xev(5000, "main.cpp", 0, 10, BLOCK1, {
+      actionType: "paste",
+      charDelta: BLOCK1.length - 10,
+      provenance: "external",
+    });
+    const events = [...typed, paste];
+    const r = buildReplay(
+      { snapshots: [xsnap(9000, { "main.cpp": BLOCK1 }, events.length)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.pasteMarks).toHaveLength(1);
+    expect(r.pasteMarks[0].charCount).toBe(BLOCK1.length);
+  });
+
+  it("pure typing and deletion produce NO paste marks", () => {
+    const typed = typeOut("main.cpp", "int main(){return 0;}", 1000);
+    const del = xev(9000, "main.cpp", 0, 21, "", { actionType: "delete", charDelta: -21 });
+    const events = [...typed, del];
+    const r = buildReplay(
+      { snapshots: [xsnap(12000, { "main.cpp": "" }, events.length)], events, openedAt: 0 },
+      { initialText: "" },
+    );
+    expect(r.pasteMarks).toHaveLength(0);
+  });
+});
+
+describe("insertedCharsOf", () => {
+  it("is not reduced by a simultaneous deletion", () => {
+    expect(insertedCharsOf({ actionType: "paste", charDelta: 29, rangeOffset: 0, rangeLength: 227, insertedText: "x".repeat(256) })).toBe(256);
+  });
+  it("sums a multi-cursor change list", () => {
+    expect(insertedCharsOf({ changes: [{ o: 5, d: 2, t: "abc" }, { o: 0, d: 2, t: "de" }] })).toBe(5);
+  });
+  it("uses the true length when the stored insertion was truncated", () => {
+    expect(insertedCharsOf({ insertedText: "z".repeat(100), insertedTextTruncated: 250000 })).toBe(250000);
+  });
+  it("falls back to charDelta on a pre-v2 event", () => {
+    expect(insertedCharsOf({ actionType: "paste", charDelta: 900 })).toBe(900);
+  });
+  it("never returns negative for a deletion", () => {
+    expect(insertedCharsOf({ actionType: "delete", charDelta: -50 })).toBe(0);
   });
 });

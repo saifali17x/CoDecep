@@ -27,6 +27,7 @@ import {
   isMetricRelevantFor,
   FLAGGABLE_METRICS,
   flaggedMetricsOf,
+  insertedCharsOf,
 } from './metrics'
 
 // ── Metric C: Robotic Variance ─────────────────────────────────────────────
@@ -718,5 +719,140 @@ describe('exam-type relevance gate', () => {
     expect(computeMergedReview({}, runCountOnly, 1, 'LIVE_LAB').sessionFlaggedMetrics).toEqual([
       'metricA',
     ])
+  })
+})
+
+// ── The paste-replace bug ──────────────────────────────────────────────────
+// A paste over selected text deletes and inserts in ONE change, so `charDelta`
+// (inserted − deleted) nets the two. Every consumer that asked charDelta how
+// big a paste was therefore under-read a replace-paste, and a paste replacing a
+// similar amount of text scored ~0 — so a student who pasted a solution, then
+// selected all and pasted a DIFFERENT one, had the second paste vanish from the
+// record. `insertedCharsOf` is the fix: a paste counts by what it inserted,
+// independent of what it replaced.
+describe('insertedCharsOf', () => {
+  it('reads the inserted length from a single exact-capture change', () => {
+    expect(insertedCharsOf({ actionType: 'paste', charDelta: 29, rangeOffset: 0, rangeLength: 227, insertedText: 'x'.repeat(256) } as never)).toBe(256)
+  })
+
+  it('is NOT reduced by a simultaneous deletion — the replace case', () => {
+    // 256 pasted over a selected 227. The net delta is 29; the paste is 256.
+    const ev = { actionType: 'paste', charDelta: 29, rangeOffset: 0, rangeLength: 227, insertedText: 'y'.repeat(256) } as never
+    expect(insertedCharsOf(ev)).toBe(256)
+    expect(insertedCharsOf(ev)).toBeGreaterThan(50) // clears PASTE_THRESHOLD
+  })
+
+  it('sums a multi-cursor change list', () => {
+    expect(insertedCharsOf({ actionType: 'paste', charDelta: 0, changes: [
+      { o: 10, d: 5, t: 'abcde' },
+      { o: 0, d: 5, t: 'fghij' },
+    ] } as never)).toBe(10)
+  })
+
+  it('uses the TRUE length when the stored insertion was truncated', () => {
+    expect(insertedCharsOf({ actionType: 'paste', charDelta: 5, insertedText: 'z'.repeat(100), insertedTextTruncated: 250_000 } as never)).toBe(250_000)
+    expect(insertedCharsOf({ actionType: 'paste', charDelta: 5, changes: [{ o: 0, d: 0, t: 'z'.repeat(100), trunc: 250_000 }] } as never)).toBe(250_000)
+  })
+
+  it('falls back to charDelta on a pre-v2 event, so old rows score as before', () => {
+    expect(insertedCharsOf({ actionType: 'paste', charDelta: 900 } as never)).toBe(900)
+  })
+
+  it('never returns a negative count for a pure deletion', () => {
+    expect(insertedCharsOf({ actionType: 'delete', charDelta: -120 } as never)).toBe(0)
+  })
+})
+
+describe('computeAuthorship — paste-replace (the bug)', () => {
+  const pasteEvent = (inserted: number, deleted: number, offset = 0) => ({
+    actionType: 'paste',
+    charDelta: inserted - deleted,
+    rangeOffset: offset,
+    rangeLength: deleted,
+    insertedText: 'p'.repeat(inserted),
+  })
+
+  it('counts a replace-paste by its INSERTED chars, not its net delta', () => {
+    // Before the fix this session scored pastedChars 29 — the net — and read as
+    // if almost nothing had been pasted.
+    const log = [{ flushedAt: 1, codeSnapshot: 'x'.repeat(256), events: [pasteEvent(256, 227)] }]
+    const r = computeAuthorship(log as never, 256)
+    expect(r.stats.pastedChars).toBe(256)
+    expect(r.stats.pastedChars).not.toBe(29)
+  })
+
+  it('two sequential pastes, the second replacing the first → BOTH counted, flagged as pasted', () => {
+    const log = [{
+      flushedAt: 1,
+      codeSnapshot: 'x'.repeat(256),
+      events: [pasteEvent(227, 0), pasteEvent(256, 227)],
+    }]
+    const r = computeAuthorship(log as never, 256)
+    expect(r.stats.pastedChars).toBe(227 + 256)
+    expect(r.stats.typedChars).toBe(0)
+    expect(r.stats.typedRatio).toBe(0)
+    // The whole point: replacing a paste with another paste must not make the
+    // session look authored.
+    expect(r.flag).toBe(true)
+    expect(r.reason).toContain('requires instructor review')
+  })
+
+  it('still flags when a replace-paste lands on top of typed content', () => {
+    const log = [{
+      flushedAt: 1,
+      codeSnapshot: 'x'.repeat(300),
+      events: [
+        ...Array(20).fill({ actionType: 'type', charDelta: 1, insertedText: 'a' }),
+        pasteEvent(300, 20),
+      ],
+    }]
+    const r = computeAuthorship(log as never, 300)
+    expect(r.stats.pastedChars).toBe(300)
+    expect(r.stats.typedChars).toBe(20)
+    expect(r.flag).toBe(true)
+  })
+
+  // ── Regression: the cases that already worked must keep working ──────────
+  it('paste into an EMPTY buffer is still counted (deleted = 0)', () => {
+    const log = [{ flushedAt: 1, codeSnapshot: 'x'.repeat(227), events: [pasteEvent(227, 0)] }]
+    const r = computeAuthorship(log as never, 227)
+    expect(r.stats.pastedChars).toBe(227)
+    expect(r.flag).toBe(true)
+  })
+
+  it('genuine typing is never miscounted as pasted', () => {
+    const log = [{
+      flushedAt: 1,
+      codeSnapshot: 'x'.repeat(400),
+      events: Array(400).fill({ actionType: 'type', charDelta: 1, insertedText: 'a' }),
+    }]
+    const r = computeAuthorship(log as never, 400)
+    expect(r.stats.pastedChars).toBe(0)
+    expect(r.stats.typedRatio).toBe(1)
+    expect(r.flag).toBe(false)
+  })
+
+  it('deletions and edits contribute no pasted characters', () => {
+    const log = [{
+      flushedAt: 1,
+      codeSnapshot: 'x'.repeat(120),
+      events: [
+        ...Array(140).fill({ actionType: 'type', charDelta: 1, insertedText: 'a' }),
+        { actionType: 'delete', charDelta: -20, rangeOffset: 5, rangeLength: 20, insertedText: '' },
+      ],
+    }]
+    const r = computeAuthorship(log as never, 120)
+    expect(r.stats.pastedChars).toBe(0)
+    expect(r.flag).toBe(false)
+  })
+
+  it('a pre-v2 pasted session scores exactly as it did before the fix', () => {
+    const log = [{ flushedAt: 1, codeSnapshot: 'x'.repeat(910), events: [
+      { actionType: 'paste', charDelta: 900 },
+      ...Array(10).fill({ actionType: 'type', charDelta: 1 }),
+    ] }]
+    const r = computeAuthorship(log as never, 910)
+    expect(r.stats.pastedChars).toBe(900)
+    expect(r.flag).toBe(true)
   })
 })
