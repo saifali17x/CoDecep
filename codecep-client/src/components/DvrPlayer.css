@@ -35,7 +35,7 @@
   border: 1px solid var(--border);
   white-space: nowrap;
 }
-.dvr-badge.in-progress { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
+.dvr-badge.in-progress { color: var(--success); border-color: rgba(var(--success-rgb), 0.4); }
 .dvr-badge.submitted   { color: var(--text-secondary); }
 
 .dvr-count {
@@ -87,7 +87,7 @@
 .dvr-task-tab.active {
   color: var(--link);
   border-color: var(--accent);
-  background: rgba(56, 139, 253, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 /* Says WHOSE numbers the pills beside it are — the selected task's, or the
@@ -363,14 +363,14 @@
   z-index: 2;
 }
 .dvr-tick:hover { transform: scale(1.4); }
-.dvr-tick:focus-visible { outline: 2px solid var(--focus, #58a6ff); outline-offset: 2px; }
+.dvr-tick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .dvr-tick.paste.external { background: var(--danger); }
 .dvr-tick.paste.internal { background: var(--warning); }
 
 /* Construct not permitted for this week — diamond. */
 .dvr-tick.ast {
-  background: #a855f7;
+  background: var(--violet);
   border-radius: 2px;
   transform: rotate(45deg);
   z-index: 3;
@@ -389,7 +389,7 @@
   border-radius: 1px;
   background: var(--danger);
   opacity: 1;
-  box-shadow: 0 0 4px rgba(248, 81, 73, 0.9);
+  box-shadow: 0 0 4px rgba(var(--danger-rgb), 0.9);
   z-index: 4;
 }
 .dvr-tick.tabout:hover { transform: scaleY(1.25); }
@@ -412,13 +412,13 @@
   flex: none;
 }
 .dvr-legend-swatch.paste { background: var(--danger); }
-.dvr-legend-swatch.ast { background: #a855f7; border-radius: 2px; transform: rotate(45deg); }
+.dvr-legend-swatch.ast { background: var(--violet); border-radius: 2px; transform: rotate(45deg); }
 .dvr-legend-swatch.tabout {
   width: 3px;
   height: 13px;
   border-radius: 1px;
   background: var(--danger);
-  box-shadow: 0 0 4px rgba(248, 81, 73, 0.9);
+  box-shadow: 0 0 4px rgba(var(--danger-rgb), 0.9);
 }
 .dvr-legend-toggle {
   display: inline-flex;
@@ -434,11 +434,11 @@
 
 /* Monaco decoration: the pasted block flashing into view */
 .dvr-paste-flash {
-  background: rgba(248, 81, 73, 0.35);
+  background: rgba(var(--danger-rgb), 0.35);
   border-radius: 2px;
   animation: paste-flash-fade 1.2s ease-out;
 }
 @keyframes paste-flash-fade {
-  0% { background: rgba(248, 81, 73, 0.6); }
-  100% { background: rgba(248, 81, 73, 0.25); }
+  0% { background: rgba(var(--danger-rgb), 0.6); }
+  100% { background: rgba(var(--danger-rgb), 0.25); }
 }

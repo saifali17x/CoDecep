@@ -25,7 +25,7 @@
   font-weight: 700;
   letter-spacing: 1.5px;
   text-transform: uppercase;
-  color: #c084fc;
+  color: var(--brand);
   white-space: nowrap;
 }
 
@@ -88,9 +88,9 @@
 }
 
 .btn-submit {
-  background: #c084fc;
-  color: #1a1a1a;
-  border: 1px solid #c084fc;
+  background: var(--brand);
+  color: var(--on-brand);
+  border: 1px solid var(--brand);
   font-weight: 600;
 }
 

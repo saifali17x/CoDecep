@@ -29,10 +29,14 @@ function fmt(ts) {
   return new Date(ts).toLocaleTimeString("en-US", { hour12: false });
 }
 
+// The three Tier-1 kinds, in the same three hues the DVR's scrubber ticks use
+// so one event reads the same wherever it is shown. Tokens rather than
+// literals (UI polish part 2) — a var() resolves in an inline style exactly as
+// it does in a stylesheet, so the log follows the active theme.
 const TYPE_COLORS = {
-  TAB_OUT: "#f59e0b",
-  ILLEGAL_PASTE: "#ef4444",
-  AST_VIOLATION: "#a855f7",
+  TAB_OUT: "var(--warning-alt)",
+  ILLEGAL_PASTE: "var(--danger)",
+  AST_VIOLATION: "var(--violet)",
 };
 
 export default function InstructorDashboard() {
@@ -316,7 +320,7 @@ export default function InstructorDashboard() {
                     {/* Plain language first, the raw event name underneath —
                         the log stays greppable against the stored tier1_log
                         while reading as English. Wording: lib/metricLabels.js. */}
-                    <td style={{ color: TYPE_COLORS[a.type] ?? "#fff" }} title={alertTypeInfo(a.type)?.desc}>
+                    <td style={{ color: TYPE_COLORS[a.type] ?? "var(--text)" }} title={alertTypeInfo(a.type)?.desc}>
                       {alertPlainName(a.type)}
                       <span className="alert-type-tech mono">{a.type}</span>
                     </td>

@@ -2,6 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
+import { BrandLockup } from "../components/BrandMark";
+import { logoAlt } from "../lib/brandAssets";
+import ThemeToggle from "../components/ThemeToggle";
 import "./portal.css";
 
 export default function LoginPage() {
@@ -31,9 +34,11 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="auth-wrap">
+    <div className="auth-wrap branded" style={{ "--auth-backdrop": `url(${logoAlt})` }}>
       <form className="auth-card" onSubmit={handleSubmit}>
-        <h1 className="auth-title">CoDecep</h1>
+        {/* The lockup already contains the wordmark, so a text <h1> beside it
+            would be the brand name twice. It carries the accessible name. */}
+        <BrandLockup />
         <p className="auth-sub">Sign in to your account</p>
 
         <div className="field">
@@ -68,6 +73,11 @@ export default function LoginPage() {
           No account? <Link to="/register">Create one</Link>
         </p>
       </form>
+
+      <div className="auth-theme">
+        <span className="auth-theme-label">Colour theme</span>
+        <ThemeToggle compact />
+      </div>
     </div>
   );
 }

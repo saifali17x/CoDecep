@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
 import socket from "../socket";
 import { useAuth } from "../context/AuthContext";
+import { useTheme } from "../context/ThemeContext";
+import { defineMonacoThemes } from "../lib/themes";
 import { apiFetch } from "../lib/api";
 import { debugLog } from "../debug";
 import { buildReplay, replayDataForTask, taskIdsInReplay } from "../lib/replayEngine";
@@ -250,6 +252,8 @@ const LIVE_STATUS = {
 
 export default function DvrPlayer({ sessionId, initialTaskId = null, live = false }) {
   const { token } = useAuth();
+  // Which Monaco theme the replay editor paints with (UI polish part 2).
+  const monacoTheme = useTheme().theme.monacoTheme;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -1067,7 +1071,12 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
             path={activeFileName ?? undefined}
             language={languageOf(activeFileName ?? "main.cpp")}
             value={text}
-            theme="vs-dark"
+            // Themed with the exam editor (UI polish part 2), so a replay and
+            // the session it reconstructs look like the same tool. Display
+            // only — the reconstruction, its exactness check and every metric
+            // shown around it are unaffected.
+            beforeMount={defineMonacoThemes}
+            theme={monacoTheme}
             onMount={(editor, monaco) => {
               editorRef.current = editor;
               monacoRef.current = monaco;

@@ -35,11 +35,11 @@
 }
 .metric-review-btn.on.accurate {
   border-color: var(--success, #3fb950);
-  background: #12261e;
+  background: var(--success-bg);
 }
 .metric-review-btn.on.inaccurate {
   border-color: var(--warning, #d29922);
-  background: #2b2111;
+  background: var(--warning-bg);
 }
 
 .metric-review-error {

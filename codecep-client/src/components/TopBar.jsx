@@ -1,3 +1,4 @@
+import { BrandMark } from "./BrandMark";
 import "./TopBar.css";
 
 // Single exam strip (Session 21): back-to-class + assignment title + lab mode on
@@ -28,6 +29,11 @@ export default function TopBar({
             ← Back to Class
           </button>
         )}
+        {/* Same mark + wordmark pairing as the app nav, at the exam strip's
+            smaller scale. Note the strip carries no theme switcher: it is kept
+            minimal on purpose so nothing tempts a student mid-exam, and the
+            theme they picked before opening the paper is what applies. */}
+        <BrandMark size={22} />
         <span className="top-bar-logo">CoDecep</span>
         {title && <span className="top-bar-title">{title}</span>}
         {labMode && <span className={`top-bar-mode ${labMode}`}>{labMode}</span>}

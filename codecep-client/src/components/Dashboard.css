@@ -112,7 +112,7 @@
   padding: 6px 10px;
   transition: border-color var(--transition);
 }
-.dvr-load-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.25); }
+.dvr-load-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.25); }
 
 .dvr-load-btn {
   background: var(--surface-2);

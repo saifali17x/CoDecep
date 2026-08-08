@@ -154,11 +154,11 @@ body.is-splitting-v .console-body {
   flex-shrink: 0;
 }
 .submit-banner.fresh {
-  background: #12261e;
+  background: var(--success-bg);
   color: var(--success, #3fb950);
 }
 .submit-banner.already {
-  background: #2b2111;
+  background: var(--warning-bg);
   color: var(--warning, #d29922);
 }
 

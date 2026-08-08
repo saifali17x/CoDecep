@@ -37,7 +37,7 @@
 
 .exam-timer.urgent {
   border-color: var(--danger, #f85149);
-  background: #2a1214;
+  background: var(--danger-bg-soft);
 }
 .exam-timer.urgent .exam-timer-value,
 .exam-timer.urgent .exam-timer-label {

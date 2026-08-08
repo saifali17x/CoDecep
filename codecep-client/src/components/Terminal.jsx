@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { IDLE_STATUS, RUNNING_STATUS } from "../lib/runStatus";
+import { useTheme } from "../context/ThemeContext";
 import "@xterm/xterm/css/xterm.css";
 import "./Terminal.css";
 
@@ -43,21 +44,6 @@ const KIND_COLOR = {
   prompt: ANSI.dim,
 };
 
-const XTERM_THEME = {
-  background: "#0a0d12",
-  foreground: "#e6edf3",
-  cursor: "#0a0d12", // input is disabled — no blinking cursor to mislead
-  selectionBackground: "#30363d",
-  black: "#0a0d12",
-  red: "#f85149",
-  green: "#3fb950",
-  yellow: "#d29922",
-  blue: "#388bfd",
-  cyan: "#58a6ff",
-  white: "#e6edf3",
-  brightBlack: "#6e7681",
-};
-
 export default function Terminal({
   events = [],
   stdin = "",
@@ -78,6 +64,17 @@ export default function Terminal({
   const fitRef = useRef(null);
   const writtenRef = useRef(0);
 
+  // xterm paints to a canvas and cannot read a CSS variable, so its palette is
+  // handed over as literals from lib/themes.js (UI polish part 2).
+  //
+  // The create-once effect below needs the palette current AT MOUNT, and must
+  // NOT take the theme as a dependency — that would tear the terminal down and
+  // rebuild it on a colour change, losing the scrollback of the run the student
+  // is reading. A ref seeded from the first render gives it that value; every
+  // LATER change is applied in place by the repaint effect further down.
+  const { theme } = useTheme();
+  const mountThemeRef = useRef(theme.xterm);
+
   // Create the xterm instance once.
   useEffect(() => {
     const host = hostRef.current;
@@ -93,7 +90,7 @@ export default function Terminal({
       // A long-running loop can print a lot; 5000 lines of scrollback is what
       // makes "scroll back through the run" a real answer rather than advice.
       scrollback: 5000,
-      theme: XTERM_THEME,
+      theme: mountThemeRef.current,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -157,6 +154,15 @@ export default function Terminal({
     writtenRef.current = events.length;
     term.scrollToBottom();
   }, [events]);
+
+  // Repaint on a theme change. xterm re-renders in place when its theme option
+  // is reassigned, so the terminal keeps its instance, its scrollback and every
+  // line already written — a colour change must not cost a student the output
+  // of the run they are reading.
+  useEffect(() => {
+    const term = termRef.current;
+    if (term) term.options.theme = theme.xterm;
+  }, [theme]);
 
   // Re-fit whenever the pane's mode changes: maximizing swaps the pane's height
   // in one frame, and xterm sizes its grid in columns/rows, not pixels.

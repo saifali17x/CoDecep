@@ -32,12 +32,9 @@
   padding: 28px var(--sp-5);
 }
 
-.auth-title {
-  margin: 0 0 var(--sp-1);
-  font-size: var(--fs-xl);
-  color: var(--text);
-  font-family: var(--font-mono); /* brand wordmark stays code-flavored */
-}
+/* The auth pages' text wordmark was replaced by the logo lockup in UI polish
+   part 2 (components/BrandMark.jsx), which carries "CoDecep" as its accessible
+   name. The rule is gone rather than left dead. */
 .auth-sub {
   margin: 0 0 20px;
   font-size: var(--fs-sm);
@@ -70,7 +67,7 @@
 .field input:focus,
 .field select:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.25);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.25);
 }
 .field input:disabled,
 .field select:disabled {
@@ -86,8 +83,8 @@
 /* ── Buttons — primary / secondary / ghost ───────────────────────────────── */
 .btn {
   background: var(--primary);
-  border: 1px solid rgba(240, 246, 252, 0.1);
-  color: #fff;
+  border: 1px solid rgba(var(--btn-border-rgb), 0.1);
+  color: var(--on-primary);
   padding: 9px 14px;
   font-size: var(--fs-md);
   font-family: inherit;
@@ -112,7 +109,7 @@
   color: var(--danger);
   border: 1px solid var(--danger);
 }
-.btn-danger:hover { background: rgba(248, 81, 73, 0.12); }
+.btn-danger:hover { background: rgba(var(--danger-rgb), 0.12); }
 
 .btn-block { width: 100%; }
 
@@ -133,7 +130,7 @@
    state — muted, not a link, no hover affordance — so it is obvious that the
    replay is not available yet rather than that a click failed. */
 .replay-unavailable {
-  color: var(--text-muted, #9aa4b2);
+  color: var(--text-muted);
   cursor: default;
   font-size: var(--fs-sm);
   font-style: italic;
@@ -175,6 +172,9 @@
   box-sizing: border-box;
 }
 .portal-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
   font-size: var(--fs-lg);
   font-weight: 600;
   color: var(--text-2);
@@ -218,13 +218,13 @@
   white-space: nowrap;
 }
 .role-pill { background: var(--surface-2); color: var(--link); }
-.type-pill.LIVE_LAB { color: var(--warning-alt); border-color: rgba(245, 158, 11, 0.4); }
-.type-pill.ASSESSMENT { color: var(--link); border-color: rgba(121, 192, 255, 0.4); }
-.status-pill.done { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
-.status-pill.active { color: var(--link); border-color: rgba(121, 192, 255, 0.4); }
-.submitted-badge { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
-.flag-pill.flagged { color: var(--warning-alt); border-color: rgba(245, 158, 11, 0.4); }
-.flag-pill.clear { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
+.type-pill.LIVE_LAB { color: var(--warning-alt); border-color: rgba(var(--warning-rgb), 0.4); }
+.type-pill.ASSESSMENT { color: var(--link); border-color: rgba(var(--link-rgb), 0.4); }
+.status-pill.done { color: var(--success); border-color: rgba(var(--success-rgb), 0.4); }
+.status-pill.active { color: var(--link); border-color: rgba(var(--link-rgb), 0.4); }
+.submitted-badge { color: var(--success); border-color: rgba(var(--success-rgb), 0.4); }
+.flag-pill.flagged { color: var(--warning-alt); border-color: rgba(var(--warning-rgb), 0.4); }
+.flag-pill.clear { color: var(--success); border-color: rgba(var(--success-rgb), 0.4); }
 .flag-pill.pending { color: var(--text-muted); }
 
 /* ── Page body / sections ────────────────────────────────────────────────── */
@@ -320,7 +320,7 @@
   padding: 8px 10px;
   border-bottom: 1px solid var(--surface);
 }
-.assign-table > tbody > tr:hover > td { background: rgba(33, 38, 45, 0.5); }
+.assign-table > tbody > tr:hover > td { background: rgba(var(--surface-2-rgb), 0.5); }
 .session-table { font-size: var(--fs-sm); }
 
 .sessions-row td {
@@ -462,7 +462,7 @@
   outline: none;
   transition: border-color var(--transition);
 }
-.node-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56, 139, 253, 0.25); }
+.node-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.25); }
 .node-results { max-height: 240px; overflow-y: auto; margin-top: var(--sp-2); }
 .node-group { margin-bottom: var(--sp-3); }
 .node-group-title {

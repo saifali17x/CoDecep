@@ -4,6 +4,8 @@ import socket from "../socket";
 import { debugLog } from "../debug";
 import { emitKeystroke } from "../lib/liveStream";
 import { badgeOf, kindOf } from "../lib/workspace";
+import { useTheme } from "../context/ThemeContext";
+import { defineMonacoThemes } from "../lib/themes";
 import "./EditorPane.css";
 
 const PASTE_THRESHOLD = 50; // charDelta > 50 triggers ILLEGAL_PASTE (per CLAUDE.md)
@@ -93,6 +95,10 @@ export default function EditorPane({
   taskId = null,
   taskLabel = null,
 }) {
+  // Which Monaco theme to paint with (UI polish part 2). Display only.
+  const { theme } = useTheme();
+  const monacoTheme = theme.monacoTheme;
+
   const lastKeystrokeTime = useRef(Date.now());
   const prevCode = useRef(code);
   const telemetryBuffer = useRef([]);
@@ -538,7 +544,14 @@ export default function EditorPane({
           language={language}
           value={code}
           onChange={handleChange}
-          theme="vs-dark"
+          // Themed per app theme (UI polish part 2). Monaco cannot read a CSS
+          // variable, so the palette comes from lib/themes.js: the default
+          // theme keeps built-in "vs-dark" byte-for-byte, and quarantine gets
+          // a registered theme whose background matches --editor-bg. Purely
+          // visual — capture, paste classification and AST validation below
+          // are untouched by which theme is showing.
+          beforeMount={defineMonacoThemes}
+          theme={monacoTheme}
           onMount={handleMount}
           options={{
             // Visually lock the editor once submitted (Session 16). The

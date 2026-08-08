@@ -1,9 +1,29 @@
-/* ── CoDecep design tokens (Session 18) ──────────────────────────────────────
-   Single source of visual truth. GitHub-dark palette; severity colors MATCH
-   lib/metricColors.js LEVEL_COLORS exactly so the app speaks one color
-   language (red = "flagged for review", never "cheating").
+/* ── CoDecep design tokens (Session 18, themed in UI polish part 2) ──────────
+   Single source of visual truth. Severity colors MATCH lib/metricColors.js
+   LEVEL_COLORS exactly so the app speaks one color language (red = "flagged
+   for review", never "cheating").
    UI text uses the sans stack; monospace is reserved for code, session IDs,
-   join codes, and metric values. */
+   join codes, and metric values.
+
+   THEMING (UI polish part 2). Two themes, swapped by ONE data attribute on
+   <html>: absent / data-theme="default" is the GitHub-dark palette below,
+   unchanged and still the default a new user sees; data-theme="quarantine" is
+   the opt-in alternate defined at the bottom of this block. The switch is a
+   TOKEN SWAP — no component has a per-theme rule — so a screen can only go out
+   of step with the theme by hardcoding a color instead of reading a token.
+   Colors are the ONLY thing that changes: spacing, radius, type and every
+   layout rule below are shared by both themes.
+
+   Three rules the quarantine block has to keep, because they are what make the
+   forensic UI readable rather than merely dark:
+     1. Severity keeps its MEANING — danger stays a red, success stays a green,
+        warning stays distinguishable from both. Color is paired with text
+        everywhere (Constraint 7), but the color must not lie.
+     2. Contrast is measured, not eyeballed, and is held at or above what the
+        default theme already achieves for the same token.
+     3. Any color a canvas consumer needs (Monaco, xterm — neither can read a
+        CSS variable) is ALSO listed in lib/themes.js. Those two lists are the
+        same palette twice; keep them in step. */
 
 :root {
   /* background layers */
@@ -34,6 +54,79 @@
   --primary: #238636;
   --primary-hover: #2ea043;
 
+  /* ── Severity scale ────────────────────────────────────────────────────────
+     The five levels lib/metricColors.js returns. That module now emits
+     var(--sev-*) instead of literals, so a metric pill is themed by the same
+     swap as everything else and there is still exactly ONE severity scale. */
+  --sev-red: #f85149;
+  --sev-yellow: #d29922;
+  --sev-green: #3fb950;
+  --sev-darkgreen: #2ea043;
+  --sev-grey: #6e7681;
+
+  /* ── Alpha compositing ─────────────────────────────────────────────────────
+     Raw triplets for the rgba() glows, focus rings and pill borders. Without
+     these a quarantine screen keeps blue focus rings and blue pill borders
+     from hardcoded rgba() literals — the exact "unstyled island" this pass
+     exists to remove. */
+  --accent-rgb: 56, 139, 253;
+  --link-rgb: 121, 192, 255;
+  --success-rgb: 63, 185, 80;
+  --warning-rgb: 245, 158, 11;
+  --danger-rgb: 248, 81, 73;
+  --surface-2-rgb: 33, 38, 45;
+  --btn-border-rgb: 240, 246, 252;
+
+  /* ── Text ON a filled swatch ───────────────────────────────────────────────
+     A fill and the text on it have to be chosen together: the quarantine
+     primary is a light moss, so white-on-primary would drop to 3.3:1 while
+     near-black lifts it to 5.6:1. Hence a token rather than a literal #fff. */
+  --on-primary: #ffffff;
+  --on-brand: #1a1a1a;
+  --on-warning: #1b1300;
+  --on-danger: #ffffff;
+  --on-badge-code: #ffffff;
+
+  /* ── Tinted state surfaces + soft state text ───────────────────────────────
+     The banner/tile backgrounds that read as "a green thing happened" without
+     shouting. Each is a very dark wash of its own semantic color. */
+  --success-bg: #12261e;
+  --warning-bg: #2b2111;
+  --danger-bg: #3d1418;
+  --danger-bg-soft: #2a1214;
+  --danger-text-soft: #ffa198;
+  --warning-text-soft: #e3b341;
+
+  /* ── Brand accent ──────────────────────────────────────────────────────────
+     The exam IDE's own accent: the Submit button, the active editor tab's
+     underline, the exam wordmark. Distinct from --primary (Run) on purpose so
+     the two exam actions never look like the same button. */
+  --brand: #c084fc;
+
+  /* Construct-not-permitted marker (AST). Its own hue because it has to stay
+     tellable apart from the paste (red/amber) and tab-out (red) ticks on one
+     scrubber — the shapes differ too, but the color carries at a glance. */
+  --violet: #a855f7;
+
+  /* ── Code surfaces ─────────────────────────────────────────────────────────
+     The editor and console canvases, one step darker than the shell so they
+     read as the thing being worked in rather than another panel. These MUST
+     track lib/themes.js: --editor-bg mirrors the Monaco theme's background and
+     --console-bg mirrors xterm's, and a mismatch shows up as a seam between
+     the chrome (CSS) and the canvas (JS). */
+  --editor-bg: #1e1e1e;
+  --editor-chrome: #2d2d2d;
+  --editor-chrome-border: #3c3c3c;
+  --editor-tab-text: #969696;
+  --editor-tab-text-active: #d4d4d4;
+  --editor-tab-close: #666666;
+  --console-bg: #0a0d12;
+  --badge-code: #5c9fd6;
+
+  /* A PDF page is paper and stays white in BOTH themes. Tinting it would
+     misrepresent the document the student is being examined on. */
+  --paper: #ffffff;
+
   /* spacing scale */
   --sp-1: 4px;
   --sp-2: 8px;
@@ -57,6 +150,108 @@
   --fs-xl: 18px;
 
   --transition: 0.15s ease;
+}
+
+/* ── Theme: Quarantine (UI polish part 2) ────────────────────────────────────
+   An opt-in alternate palette — atmospheric dark green and rust. Selected by
+   <html data-theme="quarantine">; everything not listed here is inherited from
+   :root above, so this block is a palette and nothing else. No layout, no
+   spacing, no type, no per-component rules.
+
+   The eight named colors of the palette:
+     Abyss            #121412  deepest canvas — editor and terminal
+     Quarantine Slate #1A1D1A  shell, nav, sidebars, panels
+     Overgrown Steel  #2A312A  borders, dividers, hover outlines
+     Weathered Bone   #E5E7E1  primary text
+     Faded Moss       #859385  muted / secondary text
+     Cordyceps Green  #7A9659  primary actions, active tabs
+     Clicker Sense    #9FC473  hover, success, highlights
+     Rusted Shiv      #B9523E  alerts, violations, errors
+
+   Two derivations the palette does not supply, both stated rather than
+   smuggled in:
+     --warning has no source color (the palette runs green→rust with nothing
+       between). A caution state that collapses into either neighbour would
+       cost a distinction the forensic UI actually uses — "borderline" is not
+       "flagged". #C08F45 is a weathered brass sitting clearly between the two.
+     --danger is #D2664E, a lightened Rusted Shiv. True #B9523E reads 3.5:1 on
+       Quarantine Slate, under the 4.5:1 small-text bar; the lift takes it to
+       4.66:1. The full-strength rust is kept for fills and glows, where a
+       3:1 component bar applies. */
+[data-theme="quarantine"] {
+  --bg: #121412;
+  --surface: #1a1d1a;
+  --surface-2: #222722;
+  --surface-3: #2a312a;
+
+  --border: #2a312a;
+  --border-subtle: #222722;
+
+  --text: #e5e7e1;
+  --text-2: #cbd0c6;
+  --text-secondary: #859385;
+  --text-muted: #6c7a6c;
+
+  --accent: #7a9659;
+  --info: #9fc473;
+  --link: #9fc473;
+  --success: #9fc473;
+  --success-dark: #7a9659;
+  --warning: #c08f45;
+  --warning-alt: #d2a65c;
+  --danger: #d2664e;
+  --primary: #7a9659;
+  --primary-hover: #9fc473;
+
+  --sev-red: #d2664e;
+  --sev-yellow: #c08f45;
+  --sev-green: #9fc473;
+  --sev-darkgreen: #7a9659;
+  --sev-grey: #8a968a;
+
+  --accent-rgb: 122, 150, 89;
+  --link-rgb: 159, 196, 115;
+  --success-rgb: 159, 196, 115;
+  --warning-rgb: 210, 166, 92;
+  --danger-rgb: 210, 102, 78;
+  --surface-2-rgb: 34, 39, 34;
+  --btn-border-rgb: 229, 231, 225;
+
+  /* Near-black on every light-moss or rust fill — see the note on --on-primary
+     above. Cordyceps with white text is 3.3:1; with #10140f it is 5.6:1. */
+  --on-primary: #10140f;
+  --on-brand: #10140f;
+  --on-warning: #17120a;
+  --on-danger: #1a0f0c;
+  --on-badge-code: #e5e7e1;
+
+  --success-bg: #182415;
+  --warning-bg: #2a2416;
+  --danger-bg: #2e1712;
+  --danger-bg-soft: #24140f;
+  --danger-text-soft: #e39079;
+  --warning-text-soft: #d8ae68;
+
+  /* Clicker Sense as the exam's brand accent: Submit is the decisive action,
+     and the palette's highlight color is what the rest of the theme already
+     uses for "this one". Run stays Cordyceps, so the two remain distinct. */
+  --brand: #9fc473;
+
+  /* A dusty violet — muted into the palette, still clearly not green and not
+     rust, so an AST tick stays tellable apart on the scrubber. */
+  --violet: #a98bc4;
+
+  /* Abyss for BOTH canvases. It is one step below Quarantine Slate, so the
+     editor and console still read as sunk into the shell exactly as the
+     default theme's #1e1e1e / #0a0d12 do against #161b22. */
+  --editor-bg: #121412;
+  --editor-chrome: #1a1d1a;
+  --editor-chrome-border: #2a312a;
+  --editor-tab-text: #859385;
+  --editor-tab-text-active: #e5e7e1;
+  --editor-tab-close: #5d6a5d;
+  --console-bg: #121412;
+  --badge-code: #55705e;
 }
 
 /* ── Global micro-polish ─────────────────────────────────────────────────── */

@@ -2,8 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%F0%9F%9B%A1%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+    <!-- Brand tab icon (UI polish part 2), replacing the placeholder shield
+         emoji. See public/favicon.svg for why the mark is redrawn as an SVG
+         rather than pointing at the 2.2MB logo PNG. Apple's touch icon has no
+         SVG support, so that one does take the PNG — it is fetched only when a
+         user actually adds the app to a home screen, never on a page load. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="./logos/logo-2.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0d1117" />
     <title>CoDecep — Forensic Exam Platform</title>
   </head>
   <body>

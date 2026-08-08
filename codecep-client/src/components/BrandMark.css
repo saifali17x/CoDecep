@@ -1,0 +1,121 @@
+/* Brand marks (UI polish part 2).
+
+   Every percentage below is DERIVED from measured content bounds in the
+   artwork — see the note in BrandMark.jsx. Source is logo-2.png, 1877x1536:
+
+     tree band      x[521..1348]  y[236..995]
+     full lockup    x[322..1573]  y[236..1300]
+
+   For a crop showing source region starting at (x0, y0) with width w, in a
+   container of width C:
+     background-size-x% = 1877 / w
+     position-x%        = (x0 / w) / (1877 / w - 1)
+   and the same in y against the container's own height. Both blocks use
+   `background-size: N% auto` so the image cannot be stretched out of aspect by
+   an independent height percentage. */
+
+/* ── Nav mark: square crop of the tree ───────────────────────────────────────
+   Source square: 900x900 centred on the tree at (934, 615) → x[484..1384],
+   y[165..1065]. 1877/900 = 208.6% wide; the offsets fall out at 49.5% / 25.9%. */
+.brand-mark {
+  display: inline-block;
+  flex: none;
+  border-radius: var(--r-sm);
+  /* The artwork's own black ground, kept rather than fought. On the default
+     theme it reads as a dark tile in a dark nav; on quarantine the border
+     picks up Overgrown Steel and it reads the same way. */
+  background-color: #000;
+  background-repeat: no-repeat;
+  background-size: 208.6% auto;
+  background-position: 49.5% 25.9%;
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+}
+
+/* ── Auth lockup: tree + wordmark, with a little margin ──────────────────────
+   Source region x[290..1605] (1315 wide), y[200..1336] (1136 tall).
+   1877/1315 = 142.7% wide; offsets 51.6% / 50%. */
+.brand-lockup {
+  width: 100%;
+  max-width: 210px;
+  aspect-ratio: 1315 / 1136;
+  margin: 0 auto var(--sp-4);
+  border-radius: var(--r-md);
+  background-color: #000;
+  background-repeat: no-repeat;
+  background-size: 142.7% auto;
+  background-position: 51.6% 50%;
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+}
+
+/* ── Auth page brand backdrop ────────────────────────────────────────────────
+   The secondary logo (logo-1, the circuit-grid variant) as a large brand
+   moment behind the sign-in card.
+
+   Deliberately a BACKDROP rather than a side panel: the auth card keeps its
+   exact position, width and spacing, so this adds a brand presence without
+   moving a single element — the layout constraint this pass works under. It is
+   heavily dimmed and vignetted because the card on top of it has to stay the
+   most legible thing on the page; a login form is not the place to make a
+   reader work. */
+.auth-wrap {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.auth-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: var(--auth-backdrop);
+  background-size: cover;
+  background-position: center;
+  /* Low opacity plus a mask that fades the edges: the artwork should read as
+     atmosphere at the periphery, not as a photograph the form is sitting on. */
+  opacity: 0.22;
+  -webkit-mask-image: radial-gradient(
+    ellipse 80% 70% at 50% 45%,
+    #000 0%,
+    rgba(0, 0, 0, 0.35) 55%,
+    transparent 100%
+  );
+  mask-image: radial-gradient(
+    ellipse 80% 70% at 50% 45%,
+    #000 0%,
+    rgba(0, 0, 0, 0.35) 55%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* The auth card sits ON the backdrop, so it needs its own opaque ground and a
+   little lift — otherwise the artwork shows through the form fields. */
+.auth-wrap .auth-card {
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+/* The theme switcher under the auth card: offered before sign-in so the choice
+   is already made by the time a student opens an exam (the exam strip
+   deliberately carries no switcher of its own). */
+.auth-theme {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--sp-4);
+}
+.auth-theme-label {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* Auth pages stack the card and the switcher vertically. */
+.auth-wrap.branded {
+  flex-direction: column;
+}

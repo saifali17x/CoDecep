@@ -92,9 +92,9 @@
   transition: all var(--transition, 0.15s ease);
 }
 .file-form-btn.primary {
-  background: var(--primary, #238636);
-  border-color: var(--primary, #238636);
-  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 .file-form-btn.primary:hover {
   background: var(--primary-hover, #2ea043);
@@ -216,16 +216,16 @@
   line-height: 1.4;
 }
 .file-badge.code {
-  background: #5c9fd6;
-  color: #fff;
+  background: var(--badge-code);
+  color: var(--on-badge-code);
 }
 .file-badge.data {
   background: var(--surface-3, #30363d);
   color: var(--text-2, #c9d1d9);
 }
 .file-badge.output {
-  background: var(--warning, #d29922);
-  color: #1b1300;
+  background: var(--warning);
+  color: var(--on-warning);
 }
 
 .file-actions {

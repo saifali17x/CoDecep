@@ -2,6 +2,9 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { apiFetch } from "../lib/api";
+import { BrandLockup } from "../components/BrandMark";
+import { logoAlt } from "../lib/brandAssets";
+import ThemeToggle from "../components/ThemeToggle";
 import "./portal.css";
 
 // Client-side mirror of the backend rules (validation.ts). The backend remains
@@ -25,12 +28,16 @@ function scorePassword(pw) {
   if (pw.length >= 16) s += 1;
   return Math.min(s, 4);
 }
+// Tokens, not literals (UI polish part 2), so the meter follows the active
+// theme. The scale keeps its meaning in both: weak is the danger colour,
+// strong is the success colour, and the LABEL is what actually states the
+// verdict — the bar is emphasis on top of the word.
 const STRENGTH = [
-  { label: "Weak", color: "#f85149" },
-  { label: "Weak", color: "#f85149" },
-  { label: "Fair", color: "#f59e0b" },
-  { label: "Good", color: "#d29922" },
-  { label: "Strong", color: "#3fb950" },
+  { label: "Weak", color: "var(--danger)" },
+  { label: "Weak", color: "var(--danger)" },
+  { label: "Fair", color: "var(--warning-alt)" },
+  { label: "Good", color: "var(--warning)" },
+  { label: "Strong", color: "var(--success)" },
 ];
 
 export default function RegisterPage() {
@@ -79,9 +86,10 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="auth-wrap">
+    <div className="auth-wrap branded" style={{ "--auth-backdrop": `url(${logoAlt})` }}>
       <form className="auth-card" onSubmit={handleSubmit}>
-        <h1 className="auth-title">CoDecep</h1>
+        {/* Same lockup as sign-in — the two auth screens are one moment. */}
+        <BrandLockup />
         <p className="auth-sub">Create an account</p>
 
         <div className="field">
@@ -146,6 +154,11 @@ export default function RegisterPage() {
           Already have an account? <Link to="/login">Sign in</Link>
         </p>
       </form>
+
+      <div className="auth-theme">
+        <span className="auth-theme-label">Colour theme</span>
+        <ThemeToggle compact />
+      </div>
     </div>
   );
 }

@@ -1,5 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { BrandMark } from "./BrandMark";
+import ThemeToggle from "./ThemeToggle";
 import "../pages/portal.css";
 
 // Shared authenticated layout (Session 16): consistent top nav on every
@@ -20,7 +22,13 @@ export default function AppShell({ children }) {
     <div className="portal">
       <div className="portal-header">
         <span className="shell-left">
-          <NavLink to="/portal" className="portal-brand">CoDecep</NavLink>
+          {/* Logo paired with the wordmark rather than replacing it: the mark
+              alone is a tree, and a nav that only shows it makes the product's
+              name something you have to already know. */}
+          <NavLink to="/portal" className="portal-brand">
+            <BrandMark size={26} />
+            <span>CoDecep</span>
+          </NavLink>
           <nav className="shell-nav">
             <NavLink to="/portal" className={linkClass}>Portal</NavLink>
             {user?.role === "INSTRUCTOR" && (
@@ -29,6 +37,7 @@ export default function AppShell({ children }) {
           </nav>
         </span>
         <span className="portal-user">
+          <ThemeToggle />
           <span className="role-pill">{user?.role}</span>
           {user?.username}
           <button className="btn btn-secondary" onClick={handleLogout}>Logout</button>

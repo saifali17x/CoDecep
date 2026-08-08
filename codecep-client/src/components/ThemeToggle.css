@@ -1,0 +1,69 @@
+/* Theme switcher (UI polish part 2). Every value is a token, so the control
+   that changes the theme is itself themed by the change. */
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+}
+
+.theme-toggle-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition),
+    border-color var(--transition);
+}
+
+.theme-toggle-opt:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.theme-toggle-opt.active {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--accent);
+}
+
+/* Two-stop swatch: the theme's shell color over its accent. Paired with the
+   name, never standing in for it.
+
+   The ONLY color literals outside theme.css, and deliberately so: each swatch
+   previews the theme it names, including the one that is NOT active. Reading
+   them from tokens would make both swatches show the current theme, which is
+   exactly the information the control exists to give. */
+.theme-swatch {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid rgba(var(--btn-border-rgb), 0.25);
+}
+.theme-swatch.default {
+  background: linear-gradient(135deg, #161b22 0 50%, #388bfd 50% 100%);
+}
+.theme-swatch.quarantine {
+  background: linear-gradient(135deg, #1a1d1a 0 50%, #7a9659 50% 100%);
+}
+
+/* Compact variant for the auth pages, where the control sits under the card as
+   a quiet option rather than as part of a nav. */
+.theme-toggle.compact .theme-toggle-opt {
+  padding: 2px 9px;
+}

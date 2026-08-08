@@ -65,9 +65,9 @@
 
 /* A flagged task is emphasized but never shouted at — the left rule plus the
    text label carry the meaning, color alone never does. */
-.task-report-table tr.flagged td { background: rgba(248, 81, 73, 0.06); }
+.task-report-table tr.flagged td { background: rgba(var(--danger-rgb), 0.06); }
 .task-report-table tr.flagged td:first-child { box-shadow: inset 2px 0 0 var(--danger); }
-.task-report-table tr.selected td { background: rgba(56, 139, 253, 0.1); }
+.task-report-table tr.selected td { background: rgba(var(--accent-rgb), 0.1); }
 
 .task-name { font-weight: 600; color: var(--text); }
 

@@ -3,13 +3,13 @@
   flex-direction: column;
   flex: 1;
   overflow: hidden;
-  background: #1e1e1e;
+  background: var(--editor-bg);
 }
 
 .editor-tabs {
   display: flex;
-  background: #2d2d2d;
-  border-bottom: 1px solid #3c3c3c;
+  background: var(--editor-chrome);
+  border-bottom: 1px solid var(--editor-chrome-border);
   flex-shrink: 0;
   overflow-x: auto;
 }
@@ -22,24 +22,24 @@
   height: 34px;
   font-size: 13px;
   font-family: var(--font-mono, monospace);
-  color: #969696;
+  color: var(--editor-tab-text);
   cursor: pointer;
   background: none;
   border: none;
-  border-right: 1px solid #3c3c3c;
+  border-right: 1px solid var(--editor-chrome-border);
   border-top: 2px solid transparent;
   white-space: nowrap;
   user-select: none;
 }
 
 .editor-tab:hover {
-  color: #d4d4d4;
+  color: var(--editor-tab-text-active);
 }
 
 .editor-tab.active {
-  color: #d4d4d4;
-  background: #1e1e1e;
-  border-top-color: #c084fc;
+  color: var(--editor-tab-text-active);
+  background: var(--editor-bg);
+  border-top-color: var(--brand);
 }
 
 .tab-badge {
@@ -54,8 +54,8 @@
 /* .cpp is the legacy single-file class; .code is the workspace equivalent. */
 .tab-badge.cpp,
 .tab-badge.code {
-  background: #5c9fd6;
-  color: #fff;
+  background: var(--badge-code);
+  color: var(--on-badge-code);
 }
 
 .tab-badge.data {
@@ -64,20 +64,20 @@
 }
 
 .tab-badge.output {
-  background: var(--warning, #d29922);
-  color: #1b1300;
+  background: var(--warning);
+  color: var(--on-warning);
 }
 
 .tab-close {
   margin-left: 2px;
   font-size: 14px;
-  color: #666;
+  color: var(--editor-tab-close);
   line-height: 1;
   transition: color 0.1s;
 }
 
 .tab-close:hover {
-  color: #d4d4d4;
+  color: var(--editor-tab-text-active);
 }
 
 .editor-body {

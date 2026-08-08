@@ -9,12 +9,21 @@
 // task may legitimately compile once. Documented as guidance in the UI.
 export const RUNCOUNT_OK_DEFAULT = 2;
 
+// The five severity levels, as CSS custom properties rather than literals (UI
+// polish part 2). Every consumer spends these in an inline `style`, where a
+// var() resolves exactly as it would in a stylesheet — so the severity scale
+// follows the active theme without a single component learning that themes
+// exist, and there is still ONE scale. The values live in theme.css; the
+// quarantine theme maps red → Rusted Shiv and green → Clicker Sense, keeping
+// each level's MEANING (red is "flagged for review", never "cheating") while
+// changing its hue. Contrast on both themes' surfaces is held at or above the
+// default theme's, and every pill still carries its text label.
 export const LEVEL_COLORS = {
-  red: "#f85149",
-  yellow: "#d29922",
-  green: "#3fb950",
-  darkgreen: "#2ea043",
-  grey: "#6e7681",
+  red: "var(--sev-red)",
+  yellow: "var(--sev-yellow)",
+  green: "var(--sev-green)",
+  darkgreen: "var(--sev-darkgreen)",
+  grey: "var(--sev-grey)",
 };
 
 // Metric C — Robotic Variance. LOWER CV = more suspicious (too regular).

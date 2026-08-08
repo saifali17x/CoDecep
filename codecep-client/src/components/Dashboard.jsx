@@ -5,9 +5,9 @@ import { debugLog } from "../debug";
 import "./Dashboard.css";
 
 const TYPE_COLORS = {
-  TAB_OUT: "#f59e0b",       // amber
-  ILLEGAL_PASTE: "#ef4444", // red
-  AST_VIOLATION: "#a855f7", // purple
+  TAB_OUT: "var(--warning-alt)", // amber
+  ILLEGAL_PASTE: "var(--danger)", // red
+  AST_VIOLATION: "var(--violet)", // purple
 };
 
 function fmt(ts) {
@@ -69,7 +69,7 @@ export default function Dashboard() {
                 {alerts.map((a, i) => (
                   <tr key={i}>
                     <td className="col-time">{fmt(a.timestamp)}</td>
-                    <td className="col-type" style={{ color: TYPE_COLORS[a.type] ?? "#fff" }}>
+                    <td className="col-type" style={{ color: TYPE_COLORS[a.type] ?? "var(--text)" }}>
                       {a.type}
                     </td>
                     <td className="col-student">{a.studentId}</td>

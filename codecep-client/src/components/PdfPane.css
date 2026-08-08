@@ -71,7 +71,7 @@
 /* react-pdf renders a raw <canvas>; give each page a page-like surface. */
 .pdf-page-wrap .react-pdf__Page {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
-  background: #fff;
+  background: var(--paper);
   max-width: 100%;
 }
 .pdf-page-wrap canvas { display: block; height: auto !important; max-width: 100%; }

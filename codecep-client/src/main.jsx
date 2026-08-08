@@ -5,6 +5,7 @@ import "./theme.css";
 import "./index.css";
 
 import { AuthProvider } from "./context/AuthContext";
+import { ThemeProvider } from "./context/ThemeContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import App from "./App.jsx";
 import LoginPage from "./pages/LoginPage";
@@ -16,52 +17,57 @@ import InstructorDashboard from "./pages/InstructorDashboard";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <BrowserRouter>
-      <AuthProvider>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
+    {/* ThemeProvider wraps the ROUTER, not a page: the exam IDE and /legacy
+        both render outside AppShell, and a provider mounted in the shell would
+        leave the two screens a student actually sits in unthemed. */}
+    <ThemeProvider>
+      <BrowserRouter>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
 
-          <Route
-            path="/portal"
-            element={
-              <ProtectedRoute>
-                <PortalPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/portal/classes/:classId"
-            element={
-              <ProtectedRoute>
-                <ClassPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/exam/:assignmentId"
-            element={
-              <ProtectedRoute role="STUDENT">
-                <ExamPage />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute role="INSTRUCTOR">
-                <InstructorDashboard />
-              </ProtectedRoute>
-            }
-          />
+            <Route
+              path="/portal"
+              element={
+                <ProtectedRoute>
+                  <PortalPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/portal/classes/:classId"
+              element={
+                <ProtectedRoute>
+                  <ClassPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/exam/:assignmentId"
+              element={
+                <ProtectedRoute role="STUDENT">
+                  <ExamPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute role="INSTRUCTOR">
+                  <InstructorDashboard />
+                </ProtectedRoute>
+              }
+            />
 
-          {/* Raw hardcoded dev IDE — keeps the legacy student-001 flow reachable */}
-          <Route path="/legacy" element={<App />} />
+            {/* Raw hardcoded dev IDE — keeps the legacy student-001 flow reachable */}
+            <Route path="/legacy" element={<App />} />
 
-          <Route path="/" element={<Navigate to="/portal" replace />} />
-          <Route path="*" element={<Navigate to="/portal" replace />} />
-        </Routes>
-      </AuthProvider>
-    </BrowserRouter>
+            <Route path="/" element={<Navigate to="/portal" replace />} />
+            <Route path="*" element={<Navigate to="/portal" replace />} />
+          </Routes>
+        </AuthProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>,
 );
