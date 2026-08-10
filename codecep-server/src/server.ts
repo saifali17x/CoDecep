@@ -88,6 +88,7 @@ import {
   createClassSchema,
   joinClassSchema,
   createAssignmentSchema,
+  updateAssignmentSchema,
   astValidateSchema,
   sessionCreateSchema,
   telemetrySubmitSchema,
@@ -1774,6 +1775,141 @@ app.post(
         `) in class ${classId}`
     )
     res.status(201).json(assignment)
+  }
+)
+
+// ── PATCH /api/assignments/:id ─────────────────────────────────────────────
+// Gap #52. Before this the schedule could only be set at CREATION, so the one
+// thing an instructor most plausibly needs mid-sitting — "give the cohort
+// another fifteen minutes" — could not be done through the API at all.
+//
+// This works BECAUSE the window is wall-clock (§7.3b): `closesAt` is a single
+// instant shared by the cohort and read from the database on every submit, so
+// moving it moves the deadline for every in-progress student at once, with no
+// per-session state to update and no notion of a per-student extension being
+// introduced. The countdown follows for the same reason — the client re-reads
+// the schedule from the server, which is the only authority.
+//
+// Which fields are editable is a conservative judgement, not a shortcut:
+//   - `closesAt` / `title` — always safe; neither changes how a recorded
+//     session is interpreted.
+//   - `opensAt` — a schedule bound like any other. Moving it does not retime
+//     anyone's work, because a student's start time was never an input.
+//   - `taskCount` — STRUCTURAL. Telemetry is filed under `task1`…`taskN`, so
+//     lowering it would orphan a task's recorded keystrokes and raising it
+//     would present a task no session has a workspace for. Refused outright
+//     once ANY session exists for the assignment.
+//   - `type` — not editable at all (see `updateAssignmentSchema`).
+// The PDF is not replaced here either: swapping the question sheet under a
+// sitting in progress is a different, riskier operation than adjusting a clock.
+app.patch(
+  '/api/assignments/:id',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  validate(updateAssignmentSchema),
+  async (req: Request, res: Response) => {
+    const id = String(req.params.id)
+    const assignment = await prisma.assignment.findUnique({
+      where: { id },
+      include: { class: true },
+    })
+    if (!assignment) {
+      res.status(404).json({ error: 'Assignment not found.' })
+      return
+    }
+    // The SAME ownership rule the create route applies, one level up the chain:
+    // the assignment's class must belong to the requester.
+    if (assignment.class.instructorId !== req.user!.userId) {
+      res.status(403).json({ error: 'You do not own this assignment.' })
+      return
+    }
+
+    const body = req.body as Record<string, unknown>
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(body, k)
+
+    // Absent = leave alone. Present-but-empty = clear this bound (un-schedule
+    // that side of the window). The two are genuinely different intents, so a
+    // PATCH must be able to express both.
+    const parseWhen = (v: unknown): Date | null => {
+      if (typeof v !== 'string' || v.trim() === '') return null
+      const ms = Date.parse(v)
+      return Number.isFinite(ms) ? new Date(ms) : null
+    }
+
+    const opensAt = has('opensAt') ? parseWhen(body.opensAt) : assignment.opensAt
+    const windowMinutesIn = Number.parseInt(String(body.windowMinutes ?? ''), 10)
+    let closesAt = has('closesAt') ? parseWhen(body.closesAt) : assignment.closesAt
+    // Same convenience as create: a duration with an opening instant computes
+    // the close. Only consulted when no explicit close was sent, so an explicit
+    // `closesAt` always wins over a derived one.
+    if (!has('closesAt') && Number.isFinite(windowMinutesIn)) {
+      closesAt = closesAtFrom(opensAt, windowMinutesIn)
+    }
+
+    // Refused for exactly the reason the create route refuses it: a window that
+    // can never be open would reject every submission for a whole cohort.
+    if (opensAt && closesAt && closesAt.getTime() <= opensAt.getTime()) {
+      res.status(400).json({
+        error: 'Validation failed',
+        details: [
+          { field: 'closesAt', message: 'The closing time must be after the opening time.' },
+        ],
+      })
+      return
+    }
+
+    // Structural guard. Checked against SESSIONS EXISTING, not against sessions
+    // being in progress: a submitted session's per-task forensics are already
+    // computed against the task ids it recorded, and changing the count would
+    // make the stored report describe an exam shape that no longer exists.
+    const data: Prisma.AssignmentUpdateInput = {}
+    if (has('taskCount')) {
+      const taskCount = Number.parseInt(String(body.taskCount), 10)
+      if (Number.isFinite(taskCount) && taskCount !== assignment.taskCount) {
+        const sessionCount = await prisma.session.count({ where: { assignmentId: id } })
+        if (sessionCount > 0) {
+          res.status(409).json({
+            error: 'Cannot change the number of tasks',
+            detail:
+              `${sessionCount} session(s) already exist for this assignment. Task telemetry is` +
+              ' recorded per task, so changing the count would orphan or invent per-task data.',
+            sessionCount,
+            taskCount: assignment.taskCount,
+          })
+          return
+        }
+        data.taskCount = taskCount
+      }
+    }
+
+    if (has('title') && typeof body.title === 'string') data.title = body.title.trim()
+    if (has('week')) {
+      const week = Number.parseInt(String(body.week), 10)
+      if (Number.isFinite(week) && week > 0) data.week = week
+    }
+    if (has('opensAt')) data.opensAt = opensAt
+    if (has('closesAt') || (!has('closesAt') && Number.isFinite(windowMinutesIn))) {
+      data.closesAt = closesAt
+    }
+    // Re-DERIVED from the schedule that will actually be enforced, never taken
+    // from the request — the displayed duration must not be able to disagree
+    // with the stored instants.
+    data.windowMinutes = windowMinutesBetween(opensAt, closesAt)
+
+    const updated = await prisma.assignment.update({ where: { id }, data })
+    console.log(
+      `[ASSIGNMENT] Updated "${updated.title}" (${id}) — ` +
+        (updated.closesAt || updated.opensAt
+          ? `scheduled ${updated.opensAt?.toISOString() ?? 'any time'} → ` +
+            `${updated.closesAt?.toISOString() ?? 'no close'}`
+          : 'unscheduled') +
+        `, ${updated.taskCount} task(s)`
+    )
+    // The window state is returned alongside, computed on the SERVER's clock —
+    // the same source the submit check uses, so the instructor sees the state
+    // their students are actually in.
+    const status = windowStatusFor(updated.opensAt, updated.closesAt, Date.now())
+    res.json({ ...updated, windowState: status.state, serverNow: status.serverNow })
   }
 )
 

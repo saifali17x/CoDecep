@@ -3,7 +3,7 @@ import Editor from "@monaco-editor/react";
 import socket from "../socket";
 import { debugLog } from "../debug";
 import { emitKeystroke } from "../lib/liveStream";
-import { badgeOf, kindOf } from "../lib/workspace";
+import { badgeOf, kindOf, taskLabel as labelOfTaskId } from "../lib/workspace";
 import { useTheme } from "../context/ThemeContext";
 import { defineMonacoThemes } from "../lib/themes";
 import "./EditorPane.css";
@@ -257,7 +257,16 @@ export default function EditorPane({
       });
       const { isValid, violations, violationDetail } = await res.json();
       const key = `${fileTaskId ?? ""}::${fileName}`;
-      const where = taskLabel ? `${taskLabel} / ${fileName}` : fileName;
+      // Gap #60: the alert must name the task the VIOLATION is in, not whatever
+      // task happens to be active when the check resolves. Both callers are
+      // asynchronous with respect to the active task — the switch-away path
+      // validates the file just LEFT while `taskId` already points at the new
+      // one, and the 1.5s debounce can resolve after a switch — so the label is
+      // derived from `fileTaskId`, the task whose text is being parsed. The
+      // `taskLabel` prop is still the multi-task signal (null on a single-task
+      // exam, where an alert names the file alone exactly as before).
+      const fileTaskLabel = taskLabel ? labelOfTaskId(fileTaskId) : null;
+      const where = fileTaskLabel ? `${fileTaskLabel} / ${fileName}` : fileName;
       if (!isValid && violations.length > 0) {
         const sig = `${key}:${violations[0].nodeType}:${violations[0].line}`;
         if (sig !== lastViolationSig.current[key]) {

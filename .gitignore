@@ -17,6 +17,15 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 
+# E2E scratch — captured ids and, worse, captured JWTs. Two signed instructor
+# and student tokens were found COMMITTED here (2026-08-10); a token in the repo
+# is a credential in the repo, whether or not it has since expired. These are
+# the shapes the harness writes: *tok.txt holds a token, aid_* an assignment id.
+*tok.txt
+aid_*.txt
+e2e-*.mjs
+e2e-*.cjs
+
 # OS
 .DS_Store
 Thumbs.db

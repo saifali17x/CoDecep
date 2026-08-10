@@ -6,6 +6,7 @@ import AppShell from "../components/AppShell";
 import DvrPlayer from "../components/DvrPlayer";
 import SyllabusManager from "../components/SyllabusManager";
 import NetworkPanel from "../components/NetworkPanel";
+import AssignmentScheduleEditor from "../components/AssignmentScheduleEditor";
 import TaskReport from "../components/TaskReport";
 import MetricGlossary from "../components/MetricGlossary";
 import {
@@ -105,6 +106,9 @@ export default function ClassPage() {
   const [windowMinutes, setWindowMinutes] = useState("");
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  // Gap #52 — which assignment's schedule is open for editing (instructor only).
+  const [editingFor, setEditingFor] = useState(null); // assignmentId | null
 
   // Session 16 — instructor session discovery + inline DVR replay
   const [sessionsFor, setSessionsFor] = useState(null); // assignmentId | null
@@ -390,9 +394,21 @@ export default function ClassPage() {
                       <td>{fmtDate(a.createdAt)}</td>
                       <td>
                         {isInstructor ? (
-                          <button className="link-btn" onClick={() => toggleSessions(a.id)}>
-                            {sessionsFor === a.id ? "Hide Sessions" : "View Sessions"}
-                          </button>
+                          <span className="row-actions">
+                            <button className="link-btn" onClick={() => toggleSessions(a.id)}>
+                              {sessionsFor === a.id ? "Hide Sessions" : "View Sessions"}
+                            </button>
+                            {/* Gap #52 — the schedule is the one thing an
+                                instructor may genuinely need to change while
+                                students are working. */}
+                            <button
+                              className="link-btn"
+                              onClick={() => setEditingFor(editingFor === a.id ? null : a.id)}
+                              title="Adjust when this assignment opens and closes"
+                            >
+                              {editingFor === a.id ? "Close editor" : "Edit schedule"}
+                            </button>
+                          </span>
                         ) : (
                           <span className="row-actions">
                             {submitted && <span className="submitted-badge">Submitted</span>}
@@ -403,6 +419,17 @@ export default function ClassPage() {
                         )}
                       </td>
                     </tr>,
+                    isInstructor && editingFor === a.id && (
+                      <tr key={`${a.id}-edit`} className="sessions-row">
+                        <td colSpan={5}>
+                          <AssignmentScheduleEditor
+                            assignment={a}
+                            onSaved={load}
+                            onCancel={() => setEditingFor(null)}
+                          />
+                        </td>
+                      </tr>
+                    ),
                     isInstructor && sessionsFor === a.id && (
                       <tr key={`${a.id}-sessions`} className="sessions-row">
                         <td colSpan={5}>

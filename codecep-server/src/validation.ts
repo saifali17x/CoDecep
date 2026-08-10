@@ -93,6 +93,59 @@ export const createAssignmentSchema = z.looseObject({
     .optional(),
 })
 
+// ── PATCH /api/assignments/:id (gap #52) ─────────────────────────────────────
+// The EDIT counterpart of the create schema. Every field is optional because a
+// PATCH sends only what is changing — the load-bearing case is an instructor
+// extending `closesAt` mid-sitting and touching nothing else.
+//
+// Two deliberate differences from `createAssignmentSchema`:
+//   - `type` is absent. Changing a LIVE_LAB into an ASSESSMENT mid-flight would
+//     retroactively change which signals a recorded session is judged on
+//     (§7.3d), so it is not editable here at all.
+//   - `opensAt`/`closesAt` accept the EMPTY STRING as "clear this bound", which
+//     is how an instructor un-schedules a side of the window. Absent means
+//     "leave it alone"; the route distinguishes the two.
+export const updateAssignmentSchema = z.looseObject({
+  title: z
+    .string()
+    .trim()
+    .min(1, 'title is required')
+    .max(200, 'title must be at most 200 characters')
+    .optional(),
+  week: z.coerce
+    .number()
+    .int('week must be an integer')
+    .min(1, 'week must be 1–20')
+    .max(20, 'week must be 1–20')
+    .optional(),
+  // Structural — the route refuses this outright once any session exists, since
+  // per-task telemetry is already filed under the current task ids.
+  taskCount: z.coerce
+    .number()
+    .int('taskCount must be an integer')
+    .min(1, 'taskCount must be 1–6')
+    .max(6, 'taskCount must be 1–6')
+    .optional(),
+  opensAt: z
+    .string()
+    .trim()
+    .refine((s) => s === '' || Number.isFinite(Date.parse(s)), 'opensAt must be a valid date/time')
+    .optional(),
+  closesAt: z
+    .string()
+    .trim()
+    .refine((s) => s === '' || Number.isFinite(Date.parse(s)), 'closesAt must be a valid date/time')
+    .optional(),
+  // Same convenience the create route offers: a duration computes the close
+  // from the (possibly already stored) opening instant.
+  windowMinutes: z.coerce
+    .number()
+    .int('windowMinutes must be a whole number of minutes')
+    .min(1, 'windowMinutes must be at least 1 minute')
+    .max(1440, 'windowMinutes must be at most 1440 (24 hours)')
+    .optional(),
+})
+
 export const astValidateSchema = z.looseObject({
   // Empty/short code is normal mid-typing — do not reject here.
   code: z.string(),
