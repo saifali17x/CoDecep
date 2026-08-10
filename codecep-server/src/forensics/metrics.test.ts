@@ -28,6 +28,9 @@ import {
   FLAGGABLE_METRICS,
   flaggedMetricsOf,
   insertedCharsOf,
+  typingIntervalCount,
+  MIN_TYPING_INTERVALS,
+  ROBOTIC_INSUFFICIENT_TYPING_REASON,
 } from './metrics'
 
 // ── Metric C: Robotic Variance ─────────────────────────────────────────────
@@ -84,6 +87,177 @@ describe('computeRoboticVariance', () => {
     const result = computeRoboticVariance(bursts)
     expect(result.stats).toBeDefined()
     expect(result.stats.cv).toBeDefined()
+  })
+})
+
+// ── Metric C: not assessable without genuine typing ────────────────────────
+// A rhythm computed from ~no typing is not a measurement. A fully-pasted
+// session still produces flush windows, so it still produced a CV — and a high
+// CV rendered as a green "human-like variance" on exactly the session
+// authorship flags hardest. The gate decides whether a verdict is emitted; the
+// CV math below it is untouched.
+
+/** A window of `n` genuine keystrokes, each with a real gap since the last. */
+function typedWindow(n: number, gap = 180) {
+  return {
+    flushedAt: 0,
+    codeSnapshot: '',
+    events: Array.from({ length: n }, (_, i) => ({
+      timestamp: i * gap,
+      timeSinceLastKeystrokeMs: gap,
+      actionType: 'type' as const,
+      charDelta: 1,
+      textLength: i + 1,
+    })),
+  }
+}
+
+const HIGH_VARIANCE_BURSTS = [
+  { meanTimeBetweenKeystrokes: 100 },
+  { meanTimeBetweenKeystrokes: 800 },
+  { meanTimeBetweenKeystrokes: 200 },
+  { meanTimeBetweenKeystrokes: 1200 },
+]
+
+describe('typingIntervalCount', () => {
+  it('counts genuine keystrokes that had a measurable gap', () => {
+    expect(typingIntervalCount([typedWindow(5), typedWindow(4)])).toBe(9)
+  })
+
+  it('excludes pastes — one clipboard action is not a rhythm', () => {
+    const log = [
+      {
+        flushedAt: 0,
+        codeSnapshot: '',
+        events: [
+          { timestamp: 0, timeSinceLastKeystrokeMs: 500, actionType: 'paste' as const, charDelta: 240, textLength: 240 },
+          { timestamp: 1, timeSinceLastKeystrokeMs: 200, actionType: 'type' as const, charDelta: 1, textLength: 241 },
+        ],
+      },
+    ]
+    expect(typingIntervalCount(log)).toBe(1)
+  })
+
+  it('excludes events with no recorded gap — they contribute nothing to a mean', () => {
+    const log = [
+      {
+        flushedAt: 0,
+        codeSnapshot: '',
+        events: [
+          { timestamp: 0, timeSinceLastKeystrokeMs: 0, actionType: 'type' as const, charDelta: 1, textLength: 1 },
+          { timestamp: 1, timeSinceLastKeystrokeMs: 150, actionType: 'type' as const, charDelta: 1, textLength: 2 },
+        ],
+      },
+    ]
+    expect(typingIntervalCount(log)).toBe(1)
+  })
+
+  it('counts deletions — a backspace is a keypress with real timing', () => {
+    const log = [
+      {
+        flushedAt: 0,
+        codeSnapshot: '',
+        events: [
+          { timestamp: 0, timeSinceLastKeystrokeMs: 120, actionType: 'delete' as const, charDelta: -1, textLength: 0 },
+        ],
+      },
+    ]
+    expect(typingIntervalCount(log)).toBe(1)
+  })
+
+  it('handles an empty / missing log', () => {
+    expect(typingIntervalCount([])).toBe(0)
+    expect(typingIntervalCount(null)).toBe(0)
+  })
+})
+
+describe('computeRoboticVariance — the genuine-typing gate', () => {
+  it('reports NOT ASSESSABLE on a fully-pasted session instead of a CV verdict', () => {
+    // One paste, then four flush windows: enough bursts to have produced a CV
+    // before, but no typing for that CV to describe.
+    const pastedLog = [
+      {
+        flushedAt: 0,
+        codeSnapshot: '',
+        events: [
+          {
+            timestamp: 0,
+            timeSinceLastKeystrokeMs: 900,
+            actionType: 'paste' as const,
+            charDelta: 320,
+            textLength: 320,
+          },
+        ],
+      },
+    ]
+    const result = computeRoboticVariance(HIGH_VARIANCE_BURSTS, pastedLog)
+    expect(result.reason).toBe(ROBOTIC_INSUFFICIENT_TYPING_REASON)
+    expect(result.inconclusive).toBe(true)
+    // Neutral: not a flag, and — because cv is null — not a green verdict either.
+    expect(result.flag).toBe(false)
+    expect(result.stats.cv).toBeNull()
+    expect(result.stats.typingIntervals).toBe(0)
+  })
+
+  it('still computes and reports CV once there is enough genuine typing', () => {
+    const result = computeRoboticVariance(
+      HIGH_VARIANCE_BURSTS,
+      [typedWindow(MIN_TYPING_INTERVALS)],
+    )
+    expect(result.inconclusive).toBeUndefined()
+    expect(result.reason).toBeNull()
+    expect(result.stats.cv).toBeGreaterThan(ROBOTIC_CV_MAX)
+    expect(result.stats.typingIntervals).toBe(MIN_TYPING_INTERVALS)
+  })
+
+  it('still FLAGS a robotic rhythm — the gate does not weaken detection', () => {
+    const result = computeRoboticVariance(
+      Array(5).fill({ meanTimeBetweenKeystrokes: 200 }),
+      [typedWindow(40)],
+    )
+    expect(result.flag).toBe(true)
+    expect(result.stats.cv).toBe(0)
+  })
+
+  it('is exclusive at the boundary — one interval short is not assessable', () => {
+    const below = computeRoboticVariance(HIGH_VARIANCE_BURSTS, [
+      typedWindow(MIN_TYPING_INTERVALS - 1),
+    ])
+    expect(below.inconclusive).toBe(true)
+    expect(below.stats.cv).toBeNull()
+  })
+
+  it('never reports "human-like variance" data on a barely-typed session', () => {
+    // The regression this fix exists for: cv must not survive the gate, because
+    // every UI surface turns a non-null cv into a coloured verdict.
+    for (const intervals of [0, 1, 5, MIN_TYPING_INTERVALS - 1]) {
+      const r = computeRoboticVariance(HIGH_VARIANCE_BURSTS, [typedWindow(intervals)])
+      expect(r.stats.cv).toBeNull()
+      expect(r.flag).toBe(false)
+    }
+  })
+
+  it('behaves exactly as before when no playback log is supplied', () => {
+    // Backward compatibility: a caller holding only burst data (and every test
+    // above) must be unaffected.
+    const result = computeRoboticVariance(HIGH_VARIANCE_BURSTS)
+    expect(result.inconclusive).toBeUndefined()
+    expect(result.stats.cv).not.toBeNull()
+    expect(result.stats.typingIntervals).toBeNull()
+  })
+
+  it('a too-typed-but-too-few-bursts session keeps its own guard reason', () => {
+    const result = computeRoboticVariance([{ meanTimeBetweenKeystrokes: 200 }], [typedWindow(40)])
+    expect(result.reason).toBe(ROBOTIC_INSUFFICIENT_REASON)
+    expect(result.stats.cv).toBeNull()
+  })
+
+  it('survives markInconclusiveIfSubstantial unchanged — it is already tagged', () => {
+    const gated = computeRoboticVariance(HIGH_VARIANCE_BURSTS, [typedWindow(0)])
+    const tagged = markInconclusiveIfSubstantial(gated, ROBOTIC_INSUFFICIENT_REASON, 900)
+    expect(tagged.inconclusive).toBe(true)
+    expect(tagged.reason).toBe(ROBOTIC_INSUFFICIENT_TYPING_REASON)
+    expect(tagged.flag).toBe(false)
   })
 })
 

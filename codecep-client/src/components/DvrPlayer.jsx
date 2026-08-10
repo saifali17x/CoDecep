@@ -163,6 +163,10 @@ function Tier1Row({ summary, assignmentType }) {
 function AstAuditRow({ audit }) {
   if (!audit) return null;
   const { violations = [], checkedFiles = [], flag } = audit;
+  // The number must be the count of constructs LISTED below it. The server
+  // reports one finding per top-most disallowed construct and stores that count;
+  // a session audited before that field existed falls back to the raw length.
+  const violationCount = audit.violationCount ?? violations.length;
   const color = flag ? LEVEL_COLORS.red : LEVEL_COLORS.green;
   const byFile = violations.reduce((acc, v) => {
     (acc[v.fileName] ??= []).push(v);
@@ -186,7 +190,7 @@ function AstAuditRow({ audit }) {
         {checkedFiles.length === 0
           ? "no code files"
           : flag
-            ? `${violations.length} disallowed construct(s) — flagged for review`
+            ? `${violationCount} disallowed construct(s) — flagged for review`
             : `${checkedFiles.length} file(s) clean`}
       </span>
       {/* Fix 2 — WHICH construct and WHERE, per file. A count is not something

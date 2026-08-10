@@ -229,8 +229,12 @@ const forensicsWorker = new Worker(
       LINEAR_INSUFFICIENT_REASON,
       finalCodeLength,
     )
+    // The playback log is passed so Metric C can tell "a rhythm we measured" from
+    // "no typing to measure a rhythm in". A fully-pasted session still produces
+    // flush windows, so it still produced a CV — reported as green "human-like
+    // variance" on exactly the session authorship flags hardest.
     const metricC = markInconclusiveIfSubstantial(
-      computeRoboticVariance(session.burst_history),
+      computeRoboticVariance(session.burst_history, session.playback_log),
       ROBOTIC_INSUFFICIENT_REASON,
       finalCodeLength,
     )
@@ -288,7 +292,7 @@ const forensicsWorker = new Worker(
           taskCodeLength,
         ),
         metricC: markInconclusiveIfSubstantial(
-          computeRoboticVariance(taskBursts),
+          computeRoboticVariance(taskBursts, taskLog),
           ROBOTIC_INSUFFICIENT_REASON,
           taskCodeLength,
         ),
@@ -1093,6 +1097,7 @@ async function auditCodeFiles(snapshots: Record<string, string>, assignmentId: s
       checkedFiles: [],
       violations: [],
       violationSummary: summariseViolations([]),
+      violationCount: 0,
       flag: false,
       allowlistSource: 'none',
       reason: null,
@@ -1116,14 +1121,22 @@ async function auditCodeFiles(snapshots: Record<string, string>, assignmentId: s
   // submitted session sees "used for_statement (line 12)" rather than a count
   // they cannot act on. `violations` is unchanged; both fields below are added.
   const violationSummary = summariseViolations(violations)
+  // The COUNT an instructor reads must be the number of constructs actually
+  // LISTED beside it. The walker now reports one finding per top-most disallowed
+  // construct, and `distinct` collapses the remaining case where two of the same
+  // construct sit on one line — so this is exactly what `describeViolations`
+  // enumerates. Reporting `violations.length` here instead would let the number
+  // and the list disagree again, which is the confusion this fix exists to end.
+  const violationCount = violationSummary.distinct
   return {
     checkedFiles: codeFiles.map(([name]) => name),
     violations,
     violationSummary,
+    violationCount,
     flag,
     allowlistSource: source,
     reason: flag
-      ? `Used ${describeViolations(violationSummary)} — ${violations.length} occurrence(s) across ` +
+      ? `Used ${describeViolations(violationSummary)} — ${violationCount} construct(s) across ` +
         `${new Set(violations.map((v) => v.fileName)).size} file(s); construct(s) not permitted for ` +
         `this week. Probabilistic signal requiring instructor review.`
       : null,
@@ -2000,7 +2013,7 @@ type TaskBundle = {
   metricB?: { flag?: boolean; inconclusive?: boolean }
   metricC?: { flag?: boolean; inconclusive?: boolean; stats?: { cv?: number | null } }
   authorship?: { flag?: boolean; stats?: { typedRatio?: number | null } }
-  astAudit?: { flag?: boolean; violations?: unknown[] }
+  astAudit?: { flag?: boolean; violations?: unknown[]; violationCount?: number }
 }
 
 function taskSummary(taskId: string, t: TaskBundle) {
@@ -2027,7 +2040,12 @@ function taskSummary(taskId: string, t: TaskBundle) {
     },
     astAudit: {
       flag: t.astAudit?.flag ?? null,
-      violationCount: Array.isArray(t.astAudit?.violations) ? t.astAudit!.violations!.length : 0,
+      // Prefer the stored construct count so the table's number matches the list
+      // the report shows. Sessions audited before that field existed fall back to
+      // the raw violation length, which is what they always reported.
+      violationCount:
+        t.astAudit?.violationCount ??
+        (Array.isArray(t.astAudit?.violations) ? t.astAudit!.violations!.length : 0),
     },
   }
 }

@@ -21,6 +21,22 @@ export const TYPED_MIN = 0.30
 // touching either metric's math.
 export const LINEAR_INSUFFICIENT_REASON = 'Session too short to assess linearity'
 export const ROBOTIC_INSUFFICIENT_REASON = 'Too few bursts to assess rhythm'
+
+// ── Metric C needs genuine typing to have a rhythm at all ──────────────────
+// A tunable DEFAULT, not empirical law — same status as TYPED_MIN and
+// RUNCOUNT_OK_DEFAULT. Metric C's samples are per-window MEAN inter-keystroke
+// gaps, and that mean is computed over whatever events a window contained. A
+// fully-pasted session still produces windows, so it still produced a CV — and
+// a CV over a handful of non-typing events came out high, which the report then
+// rendered as a green "human-like variance". That reads almost favourably on
+// precisely the session authorship flags hardest.
+//
+// Twelve intervals is roughly one short typed line: below it there is no rhythm
+// to characterise, and any CV is an artefact of two or three timestamps rather
+// than a measurement of how someone types.
+export const MIN_TYPING_INTERVALS = 12
+export const ROBOTIC_INSUFFICIENT_TYPING_REASON =
+  'Not assessable — too little genuine typing to judge rhythm; see the authorship metric'
 // Deliberately says "keystroke data", not "typing activity": B's guard trips on
 // too few EVENTS and C's on too few BURSTS, and a short genuine session can trip
 // C's. Either way the honest reading is "not assessable here — look at
@@ -453,26 +469,81 @@ export function computeLinearInjection(playbackLog: unknown) {
 export type RoboticVarianceResult = {
   flag: boolean
   reason: string | null
+  /**
+   * Set when the metric declined to produce a verdict. NEUTRAL — not a pass and
+   * not a flag; every UI surface already renders it grey ("not assessable")
+   * rather than green, which is the whole point of the tag.
+   */
+  inconclusive?: true
   stats: {
     sampleCount: number
     mean: number | null
     stddev: number | null
     cv: number | null
+    /** Genuine typed intervals behind those samples; null when not measured. */
+    typingIntervals?: number | null
   }
 }
 
-export function computeRoboticVariance(burstHistory: unknown): RoboticVarianceResult {
+/**
+ * How many GENUINE typing intervals a keystroke stream contains.
+ *
+ * An interval is a human keypress that had a measurable gap since the previous
+ * one — so a paste is excluded (one clipboard action is not a rhythm however
+ * many characters it carried) and an event with no recorded gap is excluded
+ * (it contributes nothing to a mean). Deletions DO count: a backspace is a
+ * keypress with real timing, and Metric C is about the tempo of typing, not
+ * about whether the characters survived.
+ */
+export function typingIntervalCount(playbackLog: unknown): number {
+  const entries = (playbackLog as PlaybackEntry[]) ?? []
+  let intervals = 0
+  for (const entry of entries) {
+    for (const event of entry?.events ?? []) {
+      if (!event || event.actionType === 'paste') continue
+      const gap = event.timeSinceLastKeystrokeMs
+      if (typeof gap === 'number' && gap > 0) intervals++
+    }
+  }
+  return intervals
+}
+
+/**
+ * @param burstHistory the per-window means the CV is computed over.
+ * @param playbackLog OPTIONAL. When given, the typing gate below applies. When
+ *   omitted the function behaves exactly as it always did — which is what keeps
+ *   any caller that only holds burst data (and every existing unit test)
+ *   unchanged.
+ */
+export function computeRoboticVariance(
+  burstHistory: unknown,
+  playbackLog?: unknown,
+): RoboticVarianceResult {
   const entries = (burstHistory as BurstEntry[]) ?? []
   const samples = entries
     .map((entry) => entry?.meanTimeBetweenKeystrokes)
     .filter((v): v is number => typeof v === 'number' && v > 0)
   const n = samples.length
 
+  // The typing gate comes FIRST, because it is the more specific diagnosis: a
+  // pasted session that produced four flush windows passes the burst guard
+  // below and would otherwise be handed a CV. The math itself is untouched —
+  // this only decides whether a verdict is emitted at all.
+  const typingIntervals = playbackLog === undefined ? null : typingIntervalCount(playbackLog)
+  if (typingIntervals !== null && typingIntervals < MIN_TYPING_INTERVALS) {
+    return {
+      flag: false,
+      reason: ROBOTIC_INSUFFICIENT_TYPING_REASON,
+      inconclusive: true,
+      stats: { sampleCount: n, mean: null, stddev: null, cv: null, typingIntervals },
+    }
+  }
+
   if (n < 3) {
     return {
       flag: false,
       reason: 'Too few bursts to assess rhythm',
-      stats: { sampleCount: n, mean: null, stddev: null, cv: null },
+      stats: { sampleCount: n, mean: null, stddev: null, cv: null, typingIntervals },
     }
   }
 
@@ -492,6 +563,7 @@ export function computeRoboticVariance(burstHistory: unknown): RoboticVarianceRe
       mean: Math.round(mean),
       stddev: parseFloat(stddev.toFixed(3)),
       cv: parseFloat(cv.toFixed(4)),
+      typingIntervals,
     },
   }
 }

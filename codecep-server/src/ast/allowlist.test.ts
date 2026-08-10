@@ -196,3 +196,124 @@ describe('summariseViolations / describeViolations', () => {
     expect(describeViolations(s)).toContain('for_statement (line 5)')
   })
 })
+
+// ── Reporting MEANINGFUL constructs, not every descendant node ──────────────
+// The walker used to count every non-allowlisted node in the tree, so one
+// forbidden construct exploded into all of its structural children: a real
+// program measured "107 disallowed construct(s)" for a handful of actual
+// constructs. These tests pin the shape of the report — a violation is the
+// TOP-MOST disallowed node, its subtree is part of it, and siblings stay
+// distinct — without loosening WHAT counts as a violation.
+describe('violations are reported per construct, not per descendant node', () => {
+  const CLASS_AND_VECTOR = `#include <iostream>
+#include <vector>
+using namespace std;
+
+class Student {
+  private:
+    int id;
+    string name;
+  public:
+    Student(int i, string n) { id = i; name = n; }
+    int getId() { return id; }
+};
+
+int main() {
+    vector<Student> students;
+    students.push_back(Student(1, "Ann"));
+    return 0;
+}
+`
+
+  it('reports a class ONCE, not as its field list / access specifiers / members', async () => {
+    const violations = (await validateAST(CLASS_AND_VECTOR, BASELINE_ALLOWLIST)).violations
+    const types = violations.map((v) => v.nodeType)
+    expect(types).toContain('class_specifier')
+    // The sub-nodes of the class are part of the class, not separate findings.
+    for (const child of [
+      'field_declaration_list',
+      'access_specifier',
+      'field_declaration',
+      'parameter_declaration',
+    ]) {
+      expect(types).not.toContain(child)
+    }
+    expect(types.filter((t) => t === 'class_specifier')).toHaveLength(1)
+  })
+
+  it('reports a std::vector ONCE, not template_type + argument list + type descriptor', async () => {
+    const types = (await validateAST(CLASS_AND_VECTOR, BASELINE_ALLOWLIST)).violations.map(
+      (v) => v.nodeType,
+    )
+    expect(types).toContain('template_type')
+    expect(types).not.toContain('template_argument_list')
+    expect(types).not.toContain('type_descriptor')
+  })
+
+  it('collapses the whole program to the constructs actually used', async () => {
+    // Before this fix the same program raised 13 findings across 10 node types
+    // for what a human would read as exactly two constructs.
+    const violations = (await validateAST(CLASS_AND_VECTOR, BASELINE_ALLOWLIST)).violations
+    expect(violations).toHaveLength(2)
+    expect(new Set(violations.map((v) => v.nodeType))).toEqual(
+      new Set(['class_specifier', 'template_type']),
+    )
+  })
+
+  it('gap #37 — a for-loop is ONE violation, not for_statement + update_expression', async () => {
+    const violations = (await validateAST(FOR_LOOP, BASELINE_ALLOWLIST)).violations
+    expect(violations).toHaveLength(1)
+    expect(violations[0].nodeType).toBe('for_statement')
+    expect(violations.map((v) => v.nodeType)).not.toContain('update_expression')
+  })
+
+  it('keeps INDEPENDENT constructs distinct — a class and a separate loop are two', async () => {
+    const src = `#include <iostream>
+using namespace std;
+
+class Point {
+  public:
+    int x;
+};
+
+int main() {
+    Point p;
+    while (p.x < 3) { p.x = p.x + 1; }
+    return 0;
+}
+`
+    const violations = (await validateAST(src, BASELINE_ALLOWLIST)).violations
+    expect(violations).toHaveLength(2)
+    expect(violations.map((v) => v.nodeType).sort()).toEqual(['class_specifier', 'while_statement'])
+  })
+
+  it('a fully-allowed program still reports zero', async () => {
+    expect((await validateAST(STD_QUALIFIED, BASELINE_ALLOWLIST)).violations).toHaveLength(0)
+    expect((await validateAST(BARE_COUT, BASELINE_ALLOWLIST)).violations).toHaveLength(0)
+  })
+
+  it('the reported COUNT equals the number of constructs the detail names', async () => {
+    const violations = (await validateAST(CLASS_AND_VECTOR, BASELINE_ALLOWLIST)).violations
+    const summary = summariseViolations(violations)
+    // This is the property the "107 constructs" bug broke: the number an
+    // instructor reads must be the number of things listed beside it.
+    expect(summary.distinct).toBe(summary.items.length)
+    expect(describeViolations(summary).split(', ')).toHaveLength(summary.distinct)
+    expect(describeViolations(summary)).not.toContain('more')
+  })
+
+  it('still FLAGS the program — this changes counting, not detection', async () => {
+    const result = await validateAST(CLASS_AND_VECTOR, BASELINE_ALLOWLIST)
+    expect(result.isValid).toBe(false)
+  })
+
+  it('an allowed outer construct is still descended into, so an inner one flags', async () => {
+    // The skip only applies UNDER a node that is already a violation. A
+    // permitted function body must still be searched, or the fix would hide
+    // findings rather than de-duplicate them.
+    const allowed = withBaseline(['while_statement', 'condition_clause', 'update_expression'])
+    const src = `int main() {\n  int n = 3;\n  while (n > 0) { for (int i = 0; i < 2; i++) { n--; } }\n  return 0;\n}\n`
+    const types = (await validateAST(src, allowed)).violations.map((v) => v.nodeType)
+    expect(types).toEqual(['for_statement'])
+  })
+})
