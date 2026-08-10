@@ -10,6 +10,7 @@ import socket from "./socket";
 import { debugLog } from "./debug";
 import * as liveStream from "./lib/liveStream";
 import { runStatusOf } from "./lib/runStatus";
+import { runResultEvents, runNetworkErrorEvents } from "./lib/runConsole";
 import {
   ENTRY_FILE,
   kindOf,
@@ -700,80 +701,23 @@ function App({
       });
       const data = await res.json();
 
-      const entries = [];
-      // A rejected workspace (bad name, too many files) comes back as a plain
-      // error — surface it instead of falling through to "(no output)".
-      if (!res.ok && data.error) {
-        patchTask(runTaskId, { runStatus: runStatusOf(data, false) });
-        pushConsole(runTaskId, [{ kind: "stderr", text: data.error }, { kind: "prompt", text: "$" }]);
-        return;
-      }
-      if (data.compileOutput) {
-        entries.push({ kind: "compile", text: data.compileOutput.trimEnd() });
-      }
-      if (data.stdout) {
-        entries.push({ kind: "stdout", text: data.stdout.replace(/\n$/, "") });
-      }
-      if (data.stderr) {
-        entries.push({ kind: "stderr", text: data.stderr.trimEnd() });
-      }
-      if (data.message) {
-        entries.push({ kind: "stderr", text: data.message.trimEnd() });
-      }
-      // Older/error shapes only carry `output`.
-      if (entries.length === 0 && data.output) {
-        entries.push({ kind: "stdout", text: String(data.output).trimEnd() });
-      }
-      if (entries.length === 0) {
-        entries.push({ kind: "meta", text: "(no output)" });
-      }
-
-      const statusText = data.status ?? "Finished";
-      const meta = [
-        data.exitCode !== null && data.exitCode !== undefined ? `exit ${data.exitCode}` : null,
-        data.time ? `${data.time}s` : null,
-        data.memory ? `${data.memory} KB` : null,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      entries.push({
-        kind: statusText === "Accepted" ? "ok" : "stderr",
-        text: `— ${statusText}${meta ? ` (${meta})` : ""}`,
+      // The console lines for this run, and the files it wrote — derived in
+      // lib/runConsole.js, which the instructor's review console also uses, so
+      // the same run can never be reported two different ways on two screens.
+      // Behavior here is unchanged: same entries, same order.
+      const { entries, outputFiles: written } = runResultEvents(data, res.ok);
+      // Their CONTENT goes to the file panel, not the console.
+      patchTask(runTaskId, {
+        outputFiles: written,
+        // The header's one-line verdict for this run ("Exited (0)",
+        // "Compilation error", …), derived from the SAME response the console
+        // just rendered so the two can never disagree.
+        runStatus: runStatusOf(data, res.ok),
       });
-
-      // Files the program wrote. Their CONTENT goes to the file panel, not the
-      // console — dumping a data file into the terminal buries the program's
-      // own output. The console just says what was captured and where it went.
-      const written = Array.isArray(data.outputFiles) ? data.outputFiles : [];
-      patchTask(runTaskId, { outputFiles: written });
-      if (written.length > 0) {
-        entries.push({
-          kind: "meta",
-          text:
-            `[files] wrote ${written.map((f) => `${f.name} (${f.bytes}B)`).join(", ")}` +
-            ` — open under "Program output" in the file panel`,
-        });
-        for (const file of written.filter((f) => f.truncated)) {
-          entries.push({
-            kind: "meta",
-            text: `[files] ${file.name} is larger than the 64 KB preview limit — showing the first 64 KB`,
-          });
-        }
-      }
-      // The header's one-line verdict for this run ("Exited (0)", "Compilation
-      // error", …), derived from the SAME response the console just rendered so
-      // the two can never disagree.
-      patchTask(runTaskId, { runStatus: runStatusOf(data, res.ok) });
-      // A resting prompt after the run, so the console reads as a real console
-      // session rather than a log that just stops.
-      entries.push({ kind: "prompt", text: "$" });
       pushConsole(runTaskId, entries);
     } catch (err) {
       patchTask(runTaskId, { runStatus: { state: "error", label: "Network error" } });
-      pushConsole(runTaskId, [
-        { kind: "stderr", text: `Network error — ${err.message}` },
-        { kind: "prompt", text: "$" },
-      ]);
+      pushConsole(runTaskId, runNetworkErrorEvents(err.message));
     } finally {
       setIsRunning(false);
     }

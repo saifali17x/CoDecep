@@ -56,8 +56,20 @@ export default function Terminal({
   runStatus = null,
   // Fill the workspace. Owned by App (it also hides the editor row), so the
   // console and the layout can never disagree about which state they are in.
+  // The Maximize control is only rendered when a handler exists — an
+  // always-visible button that does nothing is worse than no button, and the
+  // instructor's review console (which sits in a scrolling report, not a split
+  // layout) has nothing to maximize into.
   maximized = false,
   onToggleMaximize,
+  // What this console IS. The student's says "Terminal"; the instructor's
+  // review console names whose code it just ran, because on that screen the
+  // distinction between the student's own run and the instructor's is the
+  // whole point.
+  title = "Terminal",
+  // The one line under the stdin box. Defaults to the student's wording; the
+  // instructor's panel says whose program the inputs are fed to.
+  stdinNote = "One input per line, in the order your program reads them — sent with the run.",
 }) {
   const hostRef = useRef(null);
   const termRef = useRef(null);
@@ -182,7 +194,7 @@ export default function Terminal({
   return (
     <div className={`console-pane ${maximized ? "maximized" : ""}`}>
       <div className="console-bar">
-        <span className="console-title">Terminal</span>
+        <span className="console-title">{title}</span>
         <span className="console-tag" title="Program output and compiler messages for this task.">
           output
         </span>
@@ -202,14 +214,16 @@ export default function Terminal({
         >
           Clear
         </button>
-        <button
-          className="console-btn"
-          onClick={onToggleMaximize}
-          title={maximized ? "Restore the editor" : "Expand the terminal to fill the workspace"}
-          aria-pressed={maximized}
-        >
-          {maximized ? "⤡ Restore" : "⤢ Maximize"}
-        </button>
+        {onToggleMaximize && (
+          <button
+            className="console-btn"
+            onClick={onToggleMaximize}
+            title={maximized ? "Restore the editor" : "Expand the terminal to fill the workspace"}
+            aria-pressed={maximized}
+          >
+            {maximized ? "⤡ Restore" : "⤢ Maximize"}
+          </button>
+        )}
       </div>
 
       <div className="console-body">
@@ -235,9 +249,7 @@ export default function Terminal({
               Run — which is the only part of the batch model that changes what
               they do — without explaining the execution architecture to someone
               sitting a timed exam. The full note stays in the docs. */}
-          <p className="console-stdin-note">
-            One input per line, in the order your program reads them — sent with the run.
-          </p>
+          <p className="console-stdin-note">{stdinNote}</p>
         </div>
       </div>
     </div>

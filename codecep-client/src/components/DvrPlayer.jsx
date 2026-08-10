@@ -14,6 +14,7 @@ import { languageOf, taskLabel } from "../lib/workspace";
 import TaskReport, { MergedFlagPill } from "./TaskReport";
 import MetricReviewControl from "./MetricReviewControl";
 import MetricGlossary from "./MetricGlossary";
+import InstructorRunPanel from "./InstructorRunPanel";
 import { BEHAVIORAL_METRICS, judgmentIndex, judgmentKey } from "../lib/metricReviewMeta";
 import {
   METRIC_INFO,
@@ -1088,6 +1089,25 @@ export default function DvrPlayer({ sessionId, initialTaskId = null, live = fals
             options={{ readOnly: true, minimap: { enabled: false }, fontSize: 14 }}
           />
         </>
+      )}
+
+      {/* Run the submitted code, for review. Deliberately OUTSIDE the
+          duration check above: a session whose whole program arrived in one
+          paste has no keystroke timeline to play, and is exactly the session
+          an instructor most wants to execute. SUBMITTED only — the stored
+          snapshot of an in-progress session is a partial draft, and running it
+          would report a half-written program's errors as if they were the
+          submission's. Read-only: see InstructorRunPanel. */}
+      {status === "SUBMITTED" && (
+        <InstructorRunPanel
+          sessionId={sessionId}
+          // The task the instructor is currently reading. On a multi-task
+          // session with "All tasks" selected there is no single program to
+          // run, so the panel asks for a task rather than guessing one.
+          taskId={selectedTask}
+          needsTaskSelection={isMultiTask && !selectedTask}
+          studentId={studentId}
+        />
       )}
     </div>
   );

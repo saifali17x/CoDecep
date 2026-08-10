@@ -1,0 +1,54 @@
+/* ── Instructor review run ────────────────────────────────────────────────────
+   The "run the submitted code" block at the foot of the DVR. Tokenized like
+   everything else — values come from src/theme.css, so it follows the active
+   theme with no per-theme rule of its own. */
+
+.instructor-run {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  /* The console here sits in a scrolling report rather than a split layout, so
+     it gets a fixed, readable height instead of the exam's draggable one.
+     Terminal reads --console-height, so this sets that variable rather than
+     overriding the component's own rules. */
+  --console-height: 320px;
+}
+
+.instructor-run-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-2);
+}
+
+.instructor-run-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.instructor-run-btn {
+  font-size: var(--fs-sm);
+}
+
+.instructor-run-scope {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.instructor-run-note {
+  margin: 0 0 var(--sp-3) 0;
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-width: 78ch;
+}
+
+/* "Pick a task first" — guidance, not a failure, so it uses the warning token
+   rather than the danger one. */
+.instructor-run-note.warn {
+  color: var(--warning);
+}

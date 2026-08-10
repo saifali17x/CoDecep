@@ -35,6 +35,9 @@ import {
 } from './lib/examWindow'
 import { isNetworkAllowed, normalizeIp, validateIpRule } from './lib/ipAccess'
 import { parseReviewInput, reviewOut } from './lib/metricReview'
+// Instructor review runs: which stored task workspace goes up to Judge0. PURE —
+// the execution itself is the student path, unchanged.
+import { selectTaskWorkspace } from './lib/instructorRun'
 import {
   validateWorkspace,
   buildCompileScript,
@@ -1202,36 +1205,34 @@ const STDIN_MAX_CHARS = 100_000
 // still counts in the session total, it just never invents a task key.
 const TASK_ID_PATTERN = /^task[1-6]$/
 
-app.post('/api/execute', async (req: Request, res: Response) => {
-  // Multi-task (Prompt 1): `taskId` names which task's workspace this is — the
-  // client only ever sends the ACTIVE task's files, so each task compiles and
-  // runs as the separate program it is. Prompt 2 (gap #29): that id is now also
-  // what makes Metric A per-task — the run is counted against this task in
-  // `runCountByTask` as well as in the session total.
-  const { code, lang, sessionId, stdin, files, taskId } = req.body
+// ── The ONE Judge0 call ────────────────────────────────────────────────────
+// Extracted verbatim from POST /api/execute so a SECOND entry point (the
+// instructor running a submitted session's code, below) can feed it stored
+// code instead of a live workspace without a second copy of the execution
+// logic. Nothing about the execution model changed: same endpoint, same
+// language ids, same base64 round-trip, same zip packaging, same sentinel
+// peeling, same response shape.
+//
+// Deliberately does NOT touch the database. Run counting is the CALLER's
+// business — that is what keeps a student's run countable and an instructor's
+// review run side-effect-free, without either path having to remember a flag.
+type ExecutionOutcome = {
+  httpStatus: number
+  body: Record<string, unknown>
+  /** For the caller's log line; null when the call never produced a Judge0 status. */
+  statusDescription: string | null
+  outputFileCount: number
+}
 
-  const isMultiFile = files !== undefined
-
-  if (isMultiFile) {
-    const problem = validateWorkspace(files)
-    if (problem) {
-      res.status(400).json({ error: problem })
-      return
-    }
-  } else if (typeof code !== 'string' || code.trim().length === 0) {
-    res.status(400).json({ error: 'Request body must contain a non-empty "code" string.' })
-    return
-  }
-  if (stdin !== undefined && typeof stdin !== 'string') {
-    res.status(400).json({ error: '"stdin" must be a string when present.' })
-    return
-  }
-  if (typeof stdin === 'string' && stdin.length > STDIN_MAX_CHARS) {
-    res.status(400).json({ error: `"stdin" exceeds ${STDIN_MAX_CHARS} characters.` })
-    return
-  }
-
-  const workspace: WorkspaceFile[] = isMultiFile ? files : []
+async function executeOnJudge0(input: {
+  /** Multi-file workspace (language 89), or null for the legacy single-source path. */
+  workspace: WorkspaceFile[] | null
+  code?: string
+  lang?: string
+  stdin?: string
+}): Promise<ExecutionOutcome> {
+  const { workspace, code, lang, stdin } = input
+  const isMultiFile = workspace !== null
   // 89 = "Multi-file program": Judge0 ignores source_code and drives the
   // archive's own compile/run scripts instead.
   const languageId = isMultiFile ? 89 : lang === 'c' ? 50 : 54
@@ -1246,7 +1247,7 @@ app.post('/api/execute', async (req: Request, res: Response) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          source_code: isMultiFile ? '' : Buffer.from(code, 'utf8').toString('base64'),
+          source_code: isMultiFile ? '' : Buffer.from(code ?? '', 'utf8').toString('base64'),
           language_id: languageId,
           ...(isMultiFile
             ? {
@@ -1267,8 +1268,12 @@ app.post('/api/execute', async (req: Request, res: Response) => {
 
     if (!judge0Res.ok) {
       const message = `Judge0 error — HTTP ${judge0Res.status}. Try again shortly.`
-      res.status(502).json({ output: message, stderr: message, status: 'Execution service error' })
-      return
+      return {
+        httpStatus: 502,
+        body: { output: message, stderr: message, status: 'Execution service error' },
+        statusDescription: null,
+        outputFileCount: 0,
+      }
     }
 
     const raw = await judge0Res.json() as {
@@ -1308,83 +1313,251 @@ app.post('/api/execute', async (req: Request, res: Response) => {
 
     // Legacy single-string field kept for backward compatibility.
     const output = data.compile_output || data.stderr || data.stdout || '(no output)'
-    debugLog(
-      `[EXECUTE] ${typeof taskId === 'string' && taskId.length > 0 ? `${taskId} ` : ''}` +
-      `${isMultiFile ? `multi-file(${workspace.length})` : `lang=${lang ?? 'cpp'}`} id=${languageId} ` +
-      `stdin=${typeof stdin === 'string' ? stdin.length : 0}ch ` +
-      `→ status=${data.status?.description ?? 'unknown'} outputFiles=${outputFiles.length}`
-    )
 
-    // Increment runCount so Metric A has an accurate compile count.
-    // Prompt 2: also attribute the run to the task it belonged to, in ONE
-    // statement so the session total and the per-task breakdown can never drift
-    // apart. `runCount` keeps its exact existing meaning (the session total).
-    if (typeof sessionId === 'string' && sessionId.length > 0) {
-      const runTaskId = typeof taskId === 'string' && TASK_ID_PATTERN.test(taskId) ? taskId : null
-      try {
-        // Retried like the other exam hot paths: a Neon idle-drop used to make
-        // the count silently short, and now that Metric A is assessed PER TASK
-        // a lost run is a wrong per-task reading, not just a smaller total.
-        // Still non-fatal — the student's program already ran, so a failure is
-        // logged and the response is unaffected.
-        await withRetry(async () => {
-          if (runTaskId) {
-            // COALESCE covers both a session that predates the column (NULL)
-            // and a task being run for the first time (key absent).
-            await prisma.$executeRaw`
-              UPDATE sessions
-              SET "runCount"       = "runCount" + 1,
-                  "runCountByTask" = jsonb_set(
-                    COALESCE("runCountByTask", '{}'::jsonb),
-                    ARRAY[${runTaskId}::text],
-                    to_jsonb(COALESCE(("runCountByTask" ->> ${runTaskId}::text)::int, 0) + 1)
-                  ),
-                  "updatedAt"      = NOW()
-              WHERE id = ${sessionId}
-            `
-          } else {
-            // No usable task id (the /legacy flow, an older client): the run
-            // still counts in the session total, but no task key is invented.
-            await prisma.session.update({
-              where: { id: sessionId },
-              data: { runCount: { increment: 1 } },
-            })
-          }
-        })
-      } catch (err) {
-        // The session may simply not exist (tests, a stale id) — that is not
-        // worth a stack trace, but a dropped run must not be invisible either.
-        console.warn(
-          `[EXECUTE] run count not recorded for session ${sessionId}` +
-          `${runTaskId ? ` (${runTaskId})` : ''}: ${err instanceof Error ? err.message : err}`
-        )
-      }
+    return {
+      httpStatus: 200,
+      body: {
+        output: output.trimEnd(),
+        stdout: data.stdout ?? '',
+        stderr: data.stderr ?? '',
+        compileOutput: data.compile_output ?? '',
+        message: data.message ?? '',
+        status: data.status?.description ?? 'Unknown',
+        statusId: data.status?.id ?? null,
+        time: data.time ?? null,
+        memory: data.memory ?? null,
+        exitCode: data.exit_code ?? null,
+        // Files the program created or modified. Always present (empty for the
+        // legacy single-source path) so the client needs no shape check.
+        outputFiles,
+      },
+      statusDescription: data.status?.description ?? 'unknown',
+      outputFileCount: outputFiles.length,
     }
-
-    res.status(200).json({
-      output: output.trimEnd(),
-      stdout: data.stdout ?? '',
-      stderr: data.stderr ?? '',
-      compileOutput: data.compile_output ?? '',
-      message: data.message ?? '',
-      status: data.status?.description ?? 'Unknown',
-      statusId: data.status?.id ?? null,
-      time: data.time ?? null,
-      memory: data.memory ?? null,
-      exitCode: data.exit_code ?? null,
-      // Files the program created or modified. Always present (empty for the
-      // legacy single-source path) so the client needs no shape check.
-      outputFiles,
-    })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    res.status(502).json({
-      output: `Failed to reach Judge0 — ${message}`,
-      stderr: `Failed to reach Judge0 — ${message}`,
-      status: 'Execution service unreachable',
+    return {
+      httpStatus: 502,
+      body: {
+        output: `Failed to reach Judge0 — ${message}`,
+        stderr: `Failed to reach Judge0 — ${message}`,
+        status: 'Execution service unreachable',
+      },
+      statusDescription: null,
+      outputFileCount: 0,
+    }
+  }
+}
+
+app.post('/api/execute', async (req: Request, res: Response) => {
+  // Multi-task (Prompt 1): `taskId` names which task's workspace this is — the
+  // client only ever sends the ACTIVE task's files, so each task compiles and
+  // runs as the separate program it is. Prompt 2 (gap #29): that id is now also
+  // what makes Metric A per-task — the run is counted against this task in
+  // `runCountByTask` as well as in the session total.
+  const { code, lang, sessionId, stdin, files, taskId } = req.body
+
+  const isMultiFile = files !== undefined
+
+  if (isMultiFile) {
+    const problem = validateWorkspace(files)
+    if (problem) {
+      res.status(400).json({ error: problem })
+      return
+    }
+  } else if (typeof code !== 'string' || code.trim().length === 0) {
+    res.status(400).json({ error: 'Request body must contain a non-empty "code" string.' })
+    return
+  }
+  if (stdin !== undefined && typeof stdin !== 'string') {
+    res.status(400).json({ error: '"stdin" must be a string when present.' })
+    return
+  }
+  if (typeof stdin === 'string' && stdin.length > STDIN_MAX_CHARS) {
+    res.status(400).json({ error: `"stdin" exceeds ${STDIN_MAX_CHARS} characters.` })
+    return
+  }
+
+  const workspace: WorkspaceFile[] = isMultiFile ? files : []
+
+  const result = await executeOnJudge0({
+    workspace: isMultiFile ? workspace : null,
+    code,
+    lang,
+    stdin,
+  })
+
+  debugLog(
+    `[EXECUTE] ${typeof taskId === 'string' && taskId.length > 0 ? `${taskId} ` : ''}` +
+    `${isMultiFile ? `multi-file(${workspace.length})` : `lang=${lang ?? 'cpp'}`} ` +
+    `stdin=${typeof stdin === 'string' ? stdin.length : 0}ch ` +
+    `→ status=${result.statusDescription ?? 'unreachable'} outputFiles=${result.outputFileCount}`
+  )
+
+  if (result.httpStatus !== 200) {
+    res.status(result.httpStatus).json(result.body)
+    return
+  }
+
+  // Increment runCount so Metric A has an accurate compile count.
+  // Prompt 2: also attribute the run to the task it belonged to, in ONE
+  // statement so the session total and the per-task breakdown can never drift
+  // apart. `runCount` keeps its exact existing meaning (the session total).
+  if (typeof sessionId === 'string' && sessionId.length > 0) {
+    const runTaskId = typeof taskId === 'string' && TASK_ID_PATTERN.test(taskId) ? taskId : null
+    try {
+      // Retried like the other exam hot paths: a Neon idle-drop used to make
+      // the count silently short, and now that Metric A is assessed PER TASK
+      // a lost run is a wrong per-task reading, not just a smaller total.
+      // Still non-fatal — the student's program already ran, so a failure is
+      // logged and the response is unaffected.
+      await withRetry(async () => {
+        if (runTaskId) {
+          // COALESCE covers both a session that predates the column (NULL)
+          // and a task being run for the first time (key absent).
+          await prisma.$executeRaw`
+            UPDATE sessions
+            SET "runCount"       = "runCount" + 1,
+                "runCountByTask" = jsonb_set(
+                  COALESCE("runCountByTask", '{}'::jsonb),
+                  ARRAY[${runTaskId}::text],
+                  to_jsonb(COALESCE(("runCountByTask" ->> ${runTaskId}::text)::int, 0) + 1)
+                ),
+                "updatedAt"      = NOW()
+            WHERE id = ${sessionId}
+          `
+        } else {
+          // No usable task id (the /legacy flow, an older client): the run
+          // still counts in the session total, but no task key is invented.
+          await prisma.session.update({
+            where: { id: sessionId },
+            data: { runCount: { increment: 1 } },
+          })
+        }
+      })
+    } catch (err) {
+      // The session may simply not exist (tests, a stale id) — that is not
+      // worth a stack trace, but a dropped run must not be invisible either.
+      console.warn(
+        `[EXECUTE] run count not recorded for session ${sessionId}` +
+        `${runTaskId ? ` (${runTaskId})` : ''}: ${err instanceof Error ? err.message : err}`
+      )
+    }
+  }
+
+  res.status(200).json(result.body)
+})
+
+// ── POST /api/sessions/:sessionId/run ──────────────────────────────────────
+// The instructor runs a SUBMITTED student's code, for review.
+//
+// A forensic report tells an instructor HOW the code was written; it says
+// nothing about whether it works. This is the second question, answered with
+// the code the student actually submitted and — optionally — inputs the student
+// never tried.
+//
+// It is a SECOND ENTRY POINT into the existing execution path, not a second
+// execution path: the same `executeOnJudge0` the student's Run Code button
+// reaches, the same language 89 multi-file packaging, the same stdin model, the
+// same sentinel peeling, the same response shape. The only differences are
+// where the code comes from (stored snapshots, not a live editor) and what
+// happens afterwards (nothing).
+//
+// READ-ONLY, and deliberately so by CONSTRUCTION rather than by discipline:
+// this handler contains no write of any kind. No telemetry, no playback_log, no
+// tier1_log, no forensics, and — the one that would silently corrupt a metric —
+// no `runCount` / `runCountByTask` increment. Metric A is a count of the
+// STUDENT's compiles; an instructor pressing Run five times while marking must
+// never move it. The session row is read and never touched.
+//
+// SUBMITTED only. The stored snapshot of an in-progress session is a partial
+// draft up to the last flush, so running it would show the instructor a program
+// the student may be mid-way through writing and report its errors as if they
+// were the submission's. Same discipline as the recorded replay, which is also
+// a post-submission artifact.
+app.post(
+  '/api/sessions/:sessionId/run',
+  requireAuth,
+  requireRole('INSTRUCTOR'),
+  async (req: Request, res: Response) => {
+    const sessionId = String(req.params.sessionId)
+    const { taskId, stdin } = req.body ?? {}
+
+    if (stdin !== undefined && stdin !== null && typeof stdin !== 'string') {
+      res.status(400).json({ error: '"stdin" must be a string when present.' })
+      return
+    }
+    if (typeof stdin === 'string' && stdin.length > STDIN_MAX_CHARS) {
+      res.status(400).json({ error: `"stdin" exceeds ${STDIN_MAX_CHARS} characters.` })
+      return
+    }
+
+    // The SAME ownership rule as /replay and the metric reviews — an instructor
+    // may only act on sessions in a class they own. Reused rather than
+    // re-implemented so the three cannot drift into three different answers.
+    const { session, owns } = await instructorOwnsSession(sessionId, req.user!.userId)
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' })
+      return
+    }
+    if (!owns) {
+      res.status(403).json({ error: 'You do not own this class.' })
+      return
+    }
+    if (session.status !== 'SUBMITTED') {
+      res.status(409).json({
+        error: 'Submitted code can only be run after the student submits.',
+        status: session.status,
+      })
+      return
+    }
+
+    // The workspaces the session actually recorded. `finalTaskSnapshots` is the
+    // SAME selector the forensics worker and the restore route use, so what the
+    // instructor runs is by construction what the record says was submitted —
+    // including a pre-multi-task session, which it presents as a single `task1`.
+    const selection = selectTaskWorkspace(finalTaskSnapshots(session.playback_log), taskId)
+    if (!selection.ok) {
+      res.status(400).json({ error: selection.error })
+      return
+    }
+
+    // Re-validated with the student path's own rules. The snapshot is data read
+    // back OUT of the database, and a workspace with no main.cpp cannot be
+    // compiled by the globbed build — saying that beats a bare linker error.
+    const problem = validateWorkspace(selection.files)
+    if (problem) {
+      res.status(400).json({ error: `Stored workspace cannot be executed — ${problem}` })
+      return
+    }
+
+    const result = await executeOnJudge0({
+      workspace: selection.files,
+      stdin: typeof stdin === 'string' ? stdin : undefined,
+    })
+
+    // Logged as its own kind so an instructor review run is never mistaken for
+    // a student run when reading the logs either.
+    debugLog(
+      `[INSTRUCTOR-RUN] session ${sessionId} ${selection.taskId} ` +
+      `files=${selection.files.length} stdin=${typeof stdin === 'string' ? stdin.length : 0}ch ` +
+      `→ status=${result.statusDescription ?? 'unreachable'} outputFiles=${result.outputFileCount} ` +
+      `(no telemetry, runCount untouched)`
+    )
+
+    // NO database write of any kind here. See the header comment.
+    res.status(result.httpStatus).json({
+      ...result.body,
+      // Echoed so the console can name what it just ran — on a multi-task
+      // session the instructor needs to see WHICH task's program produced this.
+      taskId: selection.taskId,
+      files: selection.files.map((f) => f.name),
+      // Stated in the payload as well as the UI: this execution changed nothing
+      // about the student's record.
+      readOnly: true,
     })
   }
-})
+)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Auth + LMS routes (Track A)
