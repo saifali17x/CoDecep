@@ -9,8 +9,8 @@ loadEnv()
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
-import bcrypt from 'bcryptjs'
 import { signToken } from '../src/auth'
+import { createFixtureUser, deleteFixtureUsers, hashFixturePassword, makeTag } from './lib/harness'
 
 const API = 'http://localhost:3001'
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
@@ -23,17 +23,21 @@ const check = (name: string, ok: boolean, detail = '') => {
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
 }
 
-const tag = `rv_${Date.now()}`
+const tag = makeTag('rv')
 const withWindows = (n: number) =>
   Array.from({ length: n }, (_, i) => ({ flushedAt: Date.now() + i, codeSnapshot: 'int main(){}', events: [] }))
 
 async function main() {
-  const hash = await bcrypt.hash('Passw0rd123', 12)
-  const instructor = await prisma.user.create({
-    data: { username: `${tag}_inst`, passwordHash: hash, role: 'INSTRUCTOR' },
+  const hash = await hashFixturePassword()
+  // Every fixture is registered as deletable at creation; cleanup then removes
+  // exactly these ids and can reach nothing else (gap #81).
+  const instructor = await createFixtureUser(prisma, {
+    username: `${tag}_inst`,
+    role: 'INSTRUCTOR',
+    passwordHash: hash,
   })
   const mk = (n: string) =>
-    prisma.user.create({ data: { username: `${tag}_${n}`, passwordHash: hash, role: 'STUDENT' } })
+    createFixtureUser(prisma, { username: `${tag}_${n}`, role: 'STUDENT', passwordHash: hash })
   const enrolled = await mk('enrolled')      // member, phantom + real session
   const dupe = await mk('dupe')              // member, TWO real sessions (gap #12 shape)
   const fresh = await mk('fresh')            // member, lone empty session
@@ -117,7 +121,8 @@ async function main() {
   await prisma.assignment.delete({ where: { id: assignment.id } })
   await prisma.classMembership.deleteMany({ where: { classId: klass.id } })
   await prisma.class.delete({ where: { id: klass.id } })
-  await prisma.user.deleteMany({ where: { username: { startsWith: tag } } })
+  // BY ID, never by name pattern — see scripts/lib/harness.ts (gap #81).
+  await deleteFixtureUsers(prisma, [instructor, enrolled, dupe, fresh, idle, outsider])
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`)
   await prisma.$disconnect()

@@ -11,8 +11,8 @@ loadEnv()
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { Pool } from 'pg'
-import bcrypt from 'bcryptjs'
 import { signToken } from '../src/auth'
+import { createFixtureUser, deleteFixtureUsers, hashFixturePassword, makeTag } from './lib/harness'
 
 const API = 'http://localhost:3001'
 const pool = new Pool({ connectionString: process.env.DATABASE_URL })
@@ -30,19 +30,27 @@ function check(name: string, ok: boolean, detail = '') {
   }
 }
 
-const tag = `g71_${Date.now()}`
+const tag = makeTag('g71')
 
 async function main() {
   // ── Seed ────────────────────────────────────────────────────────────────
-  const hash = await bcrypt.hash('Passw0rd123', 12)
-  const instructor = await prisma.user.create({
-    data: { username: `${tag}_inst`, passwordHash: hash, role: 'INSTRUCTOR' },
+  const hash = await hashFixturePassword()
+  // Registered as deletable at creation; cleanup removes exactly these ids and
+  // can reach nothing else (gap #81).
+  const instructor = await createFixtureUser(prisma, {
+    username: `${tag}_inst`,
+    role: 'INSTRUCTOR',
+    passwordHash: hash,
   })
-  const student = await prisma.user.create({
-    data: { username: `${tag}_stu`, passwordHash: hash, role: 'STUDENT' },
+  const student = await createFixtureUser(prisma, {
+    username: `${tag}_stu`,
+    role: 'STUDENT',
+    passwordHash: hash,
   })
-  const student2 = await prisma.user.create({
-    data: { username: `${tag}_stu2`, passwordHash: hash, role: 'STUDENT' },
+  const student2 = await createFixtureUser(prisma, {
+    username: `${tag}_stu2`,
+    role: 'STUDENT',
+    passwordHash: hash,
   })
   const klass = await prisma.class.create({
     data: { name: `${tag} class`, joinCode: tag.slice(-6).toUpperCase(), instructorId: instructor.id },
@@ -261,11 +269,17 @@ async function main() {
   check('a /legacy row never adopts a real assignment', legacyBleed.length === 0)
 
   // ── Cleanup of this run's fixtures ──────────────────────────────────────
-  await prisma.session.deleteMany({ where: { studentId: { startsWith: tag } } })
+  // Scoped to this run's own rows by EXACT id/value, not by name prefix.
+  await prisma.session.deleteMany({
+    where: {
+      OR: [{ assignmentId: { in: [assignment.id, assignment2.id] } }, { studentId: legacyId }],
+    },
+  })
   await prisma.assignment.deleteMany({ where: { classId: klass.id } })
   await prisma.classMembership.deleteMany({ where: { classId: klass.id } })
   await prisma.class.delete({ where: { id: klass.id } })
-  await prisma.user.deleteMany({ where: { username: { startsWith: tag } } })
+  // BY ID, never by name pattern — see scripts/lib/harness.ts (gap #81).
+  await deleteFixtureUsers(prisma, [instructor, student, student2])
 
   console.log(`\n=== ${pass} passed, ${fail} failed ===`)
   await prisma.$disconnect()

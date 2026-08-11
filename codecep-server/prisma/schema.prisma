@@ -71,7 +71,42 @@ model User {
   sessions      Session[]
   metricReviews MetricReview[]
 
+  // Present only for throwaway accounts a verification harness created for
+  // itself. A database trigger refuses to delete any user WITHOUT this marker
+  // — see HarnessFixtureUser below and gap #81 in CLAUDE.md.
+  fixtureMarker HarnessFixtureUser?
+
   @@map("users")
+}
+
+// ── Harness fixture registry (gap #81, 2026-08-11) ───────────────────────────
+// The data-loss fix. A verification harness used to tear its fixtures down with
+// a PREFIX delete on username; the user's own manually-created accounts
+// (student_a/b/c) shared the prefix and were destroyed with them, repeatedly.
+//
+// A row here says "this account was created by a harness, for itself, and may
+// be deleted". The `users_guard_delete` BEFORE DELETE trigger (installed in
+// migration 20260811180000_protect_user_accounts) refuses to remove any user
+// that has no such row. That inverts the safety model: instead of every script
+// having to remember to scope its WHERE clause, a script must OPT IN per
+// account, at creation time, and the database enforces it.
+//
+// The trigger, not this table, is the protection — the table is only the
+// evidence it checks. Triggers cannot be expressed in schema.prisma, so the
+// migration is the source of truth for the rule itself.
+//
+// This is NOT an account-expiry and nothing here deletes anything. The
+// application has no user-deletion path at all; these rows exist purely so that
+// test code can clean up after itself without being able to touch a real
+// account. See scripts/lib/harness.ts for the only supported way to create one.
+model HarnessFixtureUser {
+  userId    String   @id
+  note      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("harness_fixture_users")
 }
 
 model Class {
