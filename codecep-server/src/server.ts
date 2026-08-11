@@ -2596,6 +2596,27 @@ app.get(
 // Session 17 grid dashboard: the full class roster for an assignment's exam —
 // every member student, joined with their session (if any) for THIS
 // assignment. Read-only, instructor-only, ownership-checked, flags-only.
+//
+// The roster is the UNION of two groups, and it needs both (2026-08-11):
+//
+//   * every CLASS MEMBER — which is what produces the NOT_STARTED tiles, and
+//     therefore the full grid an instructor watches an exam on. A membership is
+//     the only record that a student who has not typed anything exists at all.
+//   * every student who HAS A SESSION for this assignment, member or not.
+//
+// Membership alone was the rule until now, and it silently dropped the second
+// group: a student who sat the exam but carries no membership row (unlinked
+// telemetry, a student removed from the class after sitting, a session created
+// through a path that never joined the class) was invisible on the monitoring
+// screen while their session sat in the database and in the session LIST beside
+// it. Measured on the dev database: 7 of 18 assignment-linked sessions belonged
+// to a non-member. A student who took the exam must appear on the screen the
+// exam is watched from — being un-enrolled is a roster problem to notice, not a
+// reason to hide their work — so those tiles are added and flagged
+// `enrolled: false` rather than quietly omitted.
+//
+// This does NOT invent memberships: nothing is written, and the class roll is
+// unchanged. It only stops a read from hiding a session that exists.
 app.get(
   '/api/assignments/:id/roster',
   requireAuth,
@@ -2623,35 +2644,78 @@ app.get(
       prisma.session.findMany({
         where: { assignmentId },
         orderBy: { updatedAt: 'desc' },
+        // The linked account, so a session belonging to a non-member still gets
+        // a real username on its tile rather than the raw studentId. A session
+        // with no userId at all (the oldest rows) falls back to studentId,
+        // which IS the username for those.
+        include: { user: { select: { id: true, username: true } } },
       }),
     ])
 
     const rows = sessions.map(withEvidence)
-    const roster = memberships
-      .map((m) => {
-        // Prefer the userId link; fall back to studentId === username (the
-        // legacy identity — sessions store the username there).
-        const byUserId = rows.filter((s) => s.userId === m.user.id)
-        const mine = byUserId.length > 0 ? byUserId : rows.filter((s) => s.studentId === m.user.username)
-        // Gap #71: a duplicate pair must resolve to the row holding the
-        // student's work. Rows arrive updatedAt-desc, and `pickRealSession`
-        // only ever moves a MORE real row ahead of a less real one — so with no
-        // duplicates this is still "the latest", and with duplicates the tile
-        // shows the real session instead of a phantom created 1ms later.
-        const session = pickRealSession(mine)
-        const summary = session ? sessionSummary(session, assignment.type) : null
-        return {
-          userId: m.user.id,
-          username: m.user.username,
-          sessionId: session?.id ?? null,
-          status: session?.status ?? 'NOT_STARTED',
-          // Lets the grid gate signals that mean nothing on a take-home, and it
-          // is the assignment's type, so NOT_STARTED tiles carry it too.
-          assignmentType: assignment.type,
-          forensicsFlags: summary?.forensicsResults ?? null,
-        }
+    // Every session accounted for by a member's tile — ALL of that student's
+    // rows, not just the one displayed, so a historical duplicate where both
+    // rows are real (gap #12) cannot also surface as a second "not enrolled"
+    // tile for a student who is plainly enrolled.
+    const claimed = new Set<string>()
+
+    const tileFor = (
+      mine: typeof rows,
+      identity: { userId: string | null; username: string; enrolled: boolean }
+    ) => {
+      for (const s of mine) claimed.add(s.id)
+      // Gap #71: a duplicate pair must resolve to the row holding the
+      // student's work. Rows arrive updatedAt-desc, and `pickRealSession`
+      // only ever moves a MORE real row ahead of a less real one — so with no
+      // duplicates this is still "the latest", and with duplicates the tile
+      // shows the real session instead of a phantom created 1ms later.
+      const session = pickRealSession(mine)
+      const summary = session ? sessionSummary(session, assignment.type) : null
+      return {
+        ...identity,
+        sessionId: session?.id ?? null,
+        status: session?.status ?? 'NOT_STARTED',
+        // Lets the grid gate signals that mean nothing on a take-home, and it
+        // is the assignment's type, so NOT_STARTED tiles carry it too.
+        assignmentType: assignment.type,
+        forensicsFlags: summary?.forensicsResults ?? null,
+      }
+    }
+
+    const memberTiles = memberships.map((m) =>
+      // Prefer the userId link; fall back to studentId === username (the
+      // legacy identity — sessions store the username there).
+      tileFor(
+        rows.filter((s) => s.userId === m.user.id).length > 0
+          ? rows.filter((s) => s.userId === m.user.id)
+          : rows.filter((s) => s.studentId === m.user.username),
+        { userId: m.user.id, username: m.user.username, enrolled: true }
+      )
+    )
+
+    // Anyone left holding a session for this assignment: they sat the exam, so
+    // they belong on the screen it is watched from, flagged as not enrolled.
+    // Grouped by the account when there is one and by studentId otherwise,
+    // which is the same identity rule the rest of the session path uses.
+    const orphanGroups = new Map<string, typeof rows>()
+    for (const s of rows) {
+      if (claimed.has(s.id)) continue
+      const key = s.userId ?? `name:${s.studentId}`
+      const group = orphanGroups.get(key)
+      if (group) group.push(s)
+      else orphanGroups.set(key, [s])
+    }
+    const orphanTiles = [...orphanGroups.values()].map((group) =>
+      tileFor(group, {
+        userId: group[0].userId ?? null,
+        username: group[0].user?.username ?? group[0].studentId,
+        enrolled: false,
       })
-      .sort((a, b) => a.username.localeCompare(b.username))
+    )
+
+    const roster = [...memberTiles, ...orphanTiles].sort((a, b) =>
+      a.username.localeCompare(b.username)
+    )
 
     res.json(roster)
   }

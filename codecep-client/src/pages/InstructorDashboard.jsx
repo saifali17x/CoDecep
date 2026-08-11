@@ -248,7 +248,10 @@ export default function InstructorDashboard() {
             <div className="tile-grid">
               {tiles.map((t) => (
                 <button
-                  key={t.userId}
+                  // A student who has a session but no membership row carries
+                  // no userId (2026-08-11) — the username is the identity the
+                  // roster de-duplicates on, so it is the stable fallback key.
+                  key={t.userId ?? t.username}
                   className={[
                     "student-tile",
                     t.violating ? "violating" : t.flagged ? "had-violations" : "calm",
@@ -280,6 +283,11 @@ export default function InstructorDashboard() {
                         : t.status === "SUBMITTED"
                           ? "submitted"
                           : "in progress"}
+                    {/* They sat the exam but are not on the class roll. Shown
+                        rather than hidden, and labelled rather than passed off
+                        as enrolled — it is a roster problem to notice, not a
+                        reason to hide their work. */}
+                    {t.enrolled === false && " · not enrolled"}
                   </span>
                 </button>
               ))}
