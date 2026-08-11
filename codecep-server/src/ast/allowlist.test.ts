@@ -6,7 +6,7 @@ import {
   describeViolations,
   VIOLATION_DETAIL_LIMIT,
 } from './allowlist'
-import { validateAST } from './parser'
+import { validateAST, isSignificantConstruct } from './parser'
 
 // The two C++ I/O styles a first-year student writes. Both are correct C++ and
 // neither may ever raise a violation — the fully-qualified one did, against a
@@ -201,9 +201,11 @@ describe('summariseViolations / describeViolations', () => {
 // The walker used to count every non-allowlisted node in the tree, so one
 // forbidden construct exploded into all of its structural children: a real
 // program measured "107 disallowed construct(s)" for a handful of actual
-// constructs. These tests pin the shape of the report — a violation is the
-// TOP-MOST disallowed node, its subtree is part of it, and siblings stay
-// distinct — without loosening WHAT counts as a violation.
+// constructs. These tests pin the shape of the report — a construct's own
+// structural scaffolding is part of it rather than more findings, and siblings
+// stay distinct — without loosening WHAT counts as a violation. (A DISTINCT
+// construct nested inside a disallowed one IS reported; that is the next
+// describe block, gap #67.)
 describe('violations are reported per construct, not per descendant node', () => {
   const CLASS_AND_VECTOR = `#include <iostream>
 #include <vector>
@@ -315,5 +317,113 @@ int main() {
     const src = `int main() {\n  int n = 3;\n  while (n > 0) { for (int i = 0; i < 2; i++) { n--; } }\n  return 0;\n}\n`
     const types = (await validateAST(src, allowed)).violations.map((v) => v.nodeType)
     expect(types).toEqual(['for_statement'])
+  })
+})
+
+// ── A DISTINCT construct nested inside a disallowed one (gap #67) ───────────
+// The over-count fix above skipped a flagged node's whole subtree, which left a
+// blind spot: a forbidden `class` containing a forbidden `for` loop reported the
+// class only, and the loop — a different technique, at its own line — was never
+// named. These tests pin the two-sided rule: report significant constructs
+// wherever they are, never their structural scaffolding.
+describe('nested DISTINCT constructs are reported (gap #67), scaffolding still is not', () => {
+  const CLASS_WITH_LOOP = `class Dog {
+  public:
+    void run() {
+      for (int i = 0; i < 3; i++) { std::cout << i; }
+    }
+};
+`
+
+  it('a disallowed class CONTAINING a disallowed loop reports BOTH, each at its line', async () => {
+    const violations = (await validateAST(CLASS_WITH_LOOP, BASELINE_ALLOWLIST)).violations
+    expect(violations).toHaveLength(2)
+    expect(violations.map((v) => `${v.nodeType}:${v.line}`)).toEqual([
+      'class_specifier:1',
+      'for_statement:4',
+    ])
+  })
+
+  it('but the loop it contains does NOT drag its own scaffolding back in', async () => {
+    // The blind-spot fix must not undo the over-count fix: i++ is part of the
+    // for, and the class body is part of the class.
+    const types = (await validateAST(CLASS_WITH_LOOP, BASELINE_ALLOWLIST)).violations.map(
+      (v) => v.nodeType,
+    )
+    for (const scaffold of ['update_expression', 'field_declaration_list', 'access_specifier']) {
+      expect(types).not.toContain(scaffold)
+    }
+  })
+
+  it('reports each level of a three-deep nest once — class > for > while', async () => {
+    const src = `class A {
+  public:
+    void f() { for (int i = 0; i < 2; i++) { while (true) { } } }
+};
+`
+    const violations = (await validateAST(src, BASELINE_ALLOWLIST)).violations
+    expect(violations.map((v) => v.nodeType)).toEqual([
+      'class_specifier',
+      'for_statement',
+      'while_statement',
+    ])
+  })
+
+  it('two nested classes are two findings, at their own lines', async () => {
+    const src = `class Outer {
+  public:
+    class Inner { int x; };
+};
+`
+    const violations = (await validateAST(src, BASELINE_ALLOWLIST)).violations
+    expect(violations.map((v) => `${v.nodeType}:${v.line}`)).toEqual([
+      'class_specifier:1',
+      'class_specifier:3',
+    ])
+  })
+
+  it('the violation set is a strict SUPERSET of the old subtree-skipping rule', async () => {
+    // The safety property behind the whole change: nothing is suppressed unless
+    // it sits under something already flagged, so the top-most construct is
+    // always still recorded and the count can only go UP. A program that flagged
+    // before cannot stop flagging.
+    for (const src of [CLASS_WITH_LOOP, FOR_LOOP, STD_QUALIFIED]) {
+      const result = await validateAST(src, BASELINE_ALLOWLIST)
+      const topMost = result.violations[0]
+      if (src === STD_QUALIFIED) {
+        expect(result.violations).toHaveLength(0)
+      } else {
+        // the outermost construct is still the first finding
+        expect(topMost).toBeDefined()
+        expect(result.isValid).toBe(false)
+      }
+    }
+  })
+
+  it('significance is a DENY-list, so an unknown node type is REPORTED not ignored', () => {
+    // The failure direction that matters: a construct nobody enumerated must
+    // still be reported. An allow-list of "significant" types would go silent.
+    expect(isSignificantConstruct('some_future_cpp_node')).toBe(true)
+    expect(isSignificantConstruct('coroutine_body')).toBe(true)
+    // …while known scaffolding stays scaffolding.
+    expect(isSignificantConstruct('field_declaration_list')).toBe(false)
+    expect(isSignificantConstruct('update_expression')).toBe(false)
+  })
+
+  it('a structural type is only suppressed UNDER a flagged construct, never blanket', async () => {
+    // `i++` on its own is a finding when the increment operator is not taught
+    // yet; inside a flagged `for` it is that loop's scaffolding. A pure
+    // type-based rule would lose the standalone case.
+    const src = `int main() {\n  int i = 0;\n  i++;\n  return 0;\n}\n`
+    const types = (await validateAST(src, BASELINE_ALLOWLIST)).violations.map((v) => v.nodeType)
+    expect(types).toEqual(['update_expression'])
+  })
+
+  it('the COUNT still equals the constructs listed, with a nested finding', async () => {
+    const violations = (await validateAST(CLASS_WITH_LOOP, BASELINE_ALLOWLIST)).violations
+    const summary = summariseViolations(violations)
+    expect(summary.distinct).toBe(2)
+    expect(summary.distinct).toBe(summary.items.length)
+    expect(describeViolations(summary)).toBe('class_specifier (line 1), for_statement (line 4)')
   })
 })

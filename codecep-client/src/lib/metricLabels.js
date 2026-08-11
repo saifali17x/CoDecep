@@ -59,8 +59,8 @@ export const METRIC_INFO = {
   astAudit: {
     plain: "Allowed constructs",
     short: "Constructs",
-    desc: "Whether the submitted code uses only the C++ constructs the syllabus has taught by this week. Findings name the construct and the line so they can be checked against the syllabus.",
-    tech: "AST audit — allowlist sweep over every code file at submit",
+    desc: "Whether the SUBMITTED code uses only the C++ constructs the syllabus has taught by this week. Every code file is checked once at submit, so this counts what the student actually handed in — which can legitimately differ from the live alert count above. Findings name the construct and the line so they can be checked against the syllabus, and a distinct construct nested inside another is listed separately.",
+    tech: "AST audit — allowlist sweep over every code file at submit (final)",
   },
   merged: {
     plain: "Overall review signal",
@@ -94,8 +94,8 @@ export const TIER1_INFO = {
   astViolation: {
     plain: "Used a construct not permitted this week",
     short: "Not-permitted construct",
-    desc: "A C++ construct the syllabus has not taught by this assignment's week appeared in the editor. The alert names the construct and the line.",
-    tech: "AST_VIOLATION — live allowlist check",
+    desc: "A C++ construct the syllabus has not taught by this assignment's week appeared in the editor WHILE the student was working. The alert names the construct and the line. This counts alerts raised live, so it can legitimately differ from the submit-time check below: a construct typed and then removed is counted here and not there.",
+    tech: "AST_VIOLATION — live allowlist check (during the exam)",
   },
 };
 
