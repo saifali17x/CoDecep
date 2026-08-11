@@ -25,6 +25,9 @@ import {
 } from './ast/allowlist'
 import { buildZip } from './lib/zip'
 import { decideSessionAction, buildRestorePayload } from './lib/sessionLifecycle'
+// Gap #71 — which of several rows for one (student, assignment) is the REAL
+// session, and which is an empty phantom left by two overlapping creates. PURE.
+import { pickRealSession, dropPhantomDuplicates } from './lib/sessionResolution'
 import {
   windowStatusFor,
   isSubmitAllowed,
@@ -489,6 +492,30 @@ app.get('/api/network/my-ip', requireAuth, (req: Request, res: Response) => {
 // A row belonging to a DIFFERENT assignment is never a candidate: the lookup
 // filters on assignmentId, so it simply isn't in the list. Different assignment
 // = different session, always.
+//
+// ── Race safety (gap #71) ──────────────────────────────────────────────────
+// The rule above runs AFTER a SELECT, so it cannot stop two creates that
+// overlap: both read "no row exists", both INSERT, and the pair ends up with an
+// empty phantom beside the real session. React StrictMode's dev double-mount
+// fires exactly that, ~1-3ms apart (observed in the local database as pairs
+// sharing createdAt to the millisecond), and a double-clicked link or a retried
+// request does the same in production.
+//
+// The check-and-create is therefore serialized per identity by a Postgres
+// ADVISORY transaction lock. Why this and not the alternatives:
+//
+// - A unique constraint is out (see the schema): live rows already violate
+//   one-session-per-pair and they are forensic records of real exams.
+// - SERIALIZABLE would work but resolves the conflict by ABORTING one
+//   transaction (40001), so it needs a retry loop on top and turns a race into
+//   a user-visible failure mode on the exam-open path.
+// - An in-process mutex would not survive more than one server process.
+//
+// An advisory lock is scoped to exactly the pair being created, held only for
+// this transaction, released on commit or crash, invisible to every other row,
+// and adds nothing to any other path — session create happens once per exam
+// open. The second request blocks for the microseconds the first needs, then
+// SELECTs again inside the lock, finds the row, and RESUMES it.
 app.post(
   '/api/session/create',
   validate(sessionCreateSchema),
@@ -498,24 +525,26 @@ app.post(
   const hasAssignment = typeof assignmentId === 'string' && assignmentId.length > 0
   const hasUserId = typeof userId === 'string' && userId.length > 0
 
+  // `assignmentId: null` is deliberate on the no-assignment (/legacy) path:
+  // "no assignment" is its own bucket, so the dev flow can never adopt a real
+  // exam's row — which is the other half of gap #12. The same split applies to
+  // the lock key below, so /legacy creates never contend with a real exam's.
+  const assignmentClause = hasAssignment
+    ? Prisma.sql`"assignmentId" = ${assignmentId}`
+    : Prisma.sql`"assignmentId" IS NULL`
   // Who this student is, tolerant of every row shape in the database: a session
   // opened through ExamPage carries userId AND studentId (the username), while
   // the oldest dev rows carry studentId only. Usernames are unique, so matching
   // either identifier is safe and no legacy row is stranded.
-  const identity = hasUserId ? { OR: [{ userId }, { studentId }] } : { studentId }
+  const identityClause = hasUserId
+    ? Prisma.sql`("userId" = ${userId} OR "studentId" = ${studentId})`
+    : Prisma.sql`"studentId" = ${studentId}`
+  // Keyed on studentId rather than userId because studentId is present on EVERY
+  // request and every row shape, so two concurrent creates for one student
+  // always take the same lock even if one of them omits the userId.
+  const createLockKey = `codecep:session-create:${hasAssignment ? assignmentId : ''}:${studentId}`
 
   try {
-    // `assignmentId: null` is deliberate on the no-assignment (/legacy) path:
-    // "no assignment" is its own bucket, so the dev flow can never adopt a real
-    // exam's row — which is the other half of gap #12.
-    const existing = await withRetry(() =>
-      prisma.session.findMany({
-        where: hasAssignment ? { assignmentId, ...identity } : { assignmentId: null, ...identity },
-        orderBy: { updatedAt: 'desc' },
-        select: { id: true, status: true, createdAt: true },
-      })
-    )
-
     // Scheduled window (Feature 1, wall-clock): the deadline is the assignment's
     // OWN `closesAt` — the same instant for every student — handed back so the
     // exam UI can count down to it instead of doing arithmetic on its own clock.
@@ -547,60 +576,107 @@ app.post(
       }
     }
 
-    // ALREADY_SUBMITTED applies to real assignments only. The /legacy dev flow
-    // has years of submitted student-001 rows behind it, so treating those as a
-    // lock would make the dev exam permanently unopenable; there, only an open
-    // session is a candidate and the behavior is exactly what it always was.
-    const candidates = hasAssignment ? existing : existing.filter((s) => s.status === 'IN_PROGRESS')
-    const decision = decideSessionAction(candidates)
+    // Everything that decides WHICH row this student is opening happens inside
+    // one transaction, behind the advisory lock, so a concurrent create for the
+    // same pair waits and then sees this one's row instead of writing a second.
+    const outcome = await withRetry(() =>
+      prisma.$transaction(async (tx) => {
+        // Serialize on the identity, not on the table: two DIFFERENT students
+        // creating at the same instant never contend. Released at commit.
+        // `$executeRaw`, not `$queryRaw`: the lock function returns void, which
+        // Prisma cannot deserialize as a result column.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${createLockKey}, 0))`
 
-    if (decision.action === 'ALREADY_SUBMITTED') {
-      debugLog(`[SESSION] ${studentId} already submitted assignment ${assignmentId} (${decision.sessionId})`)
-      res.json({ sessionId: decision.sessionId, status: 'ALREADY_SUBMITTED', resumed: false })
+        // Raw rather than `findMany` so the telemetry counts come back without
+        // dragging every candidate's whole playback_log into Node — the JSONB
+        // column holds an entire exam. These counts are what let
+        // `decideSessionAction` resume the REAL row rather than a phantom
+        // duplicate that happens to sort first (gap #71).
+        const existing = await tx.$queryRaw<
+          {
+            id: string
+            status: string
+            createdAt: Date
+            updatedAt: Date
+            windowCount: number
+            tier1Count: number
+            hasForensics: boolean
+            runCount: number
+          }[]
+        >`
+          SELECT id, status, "createdAt", "updatedAt", "runCount",
+                 COALESCE(jsonb_array_length(playback_log), 0)::int AS "windowCount",
+                 COALESCE(jsonb_array_length(tier1_log), 0)::int    AS "tier1Count",
+                 ("forensicsResults" IS NOT NULL)                   AS "hasForensics"
+          FROM sessions
+          WHERE ${assignmentClause} AND ${identityClause}
+          ORDER BY "updatedAt" DESC
+        `
+
+        // ALREADY_SUBMITTED applies to real assignments only. The /legacy dev
+        // flow has years of submitted student-001 rows behind it, so treating
+        // those as a lock would make the dev exam permanently unopenable;
+        // there, only an open session is a candidate and the behavior is
+        // exactly what it always was.
+        const candidates = hasAssignment
+          ? existing
+          : existing.filter((s) => s.status === 'IN_PROGRESS')
+        const decision = decideSessionAction(candidates)
+
+        if (decision.action !== 'CREATE') {
+          const row = candidates.find((s) => s.id === decision.sessionId)!
+          return { action: decision.action, sessionId: row.id, createdAt: row.createdAt }
+        }
+
+        const session = await tx.session.create({
+          data: {
+            studentId,
+            status: 'IN_PROGRESS',
+            // Session 22 (part 2): an EMPTY log means "Tier-1 alerts are being
+            // recorded for this session, none fired yet". NULL (the column's
+            // state for pre-feature rows) means "not recorded" — the report must
+            // never confuse the two.
+            tier1_log: [],
+            // Backward compatible: the hardcoded student-001 dev flow sends neither.
+            ...(hasUserId ? { userId } : {}),
+            ...(hasAssignment ? { assignmentId } : {}),
+          },
+          select: { id: true, createdAt: true },
+        })
+        return { action: 'CREATE' as const, sessionId: session.id, createdAt: session.createdAt }
+      })
+    )
+
+    if (outcome.action === 'ALREADY_SUBMITTED') {
+      debugLog(`[SESSION] ${studentId} already submitted assignment ${assignmentId} (${outcome.sessionId})`)
+      res.json({ sessionId: outcome.sessionId, status: 'ALREADY_SUBMITTED', resumed: false })
       return
     }
-    if (decision.action === 'RESUME') {
+    if (outcome.action === 'RESUME') {
       debugLog(
-        `[SESSION] Resuming session ${decision.sessionId} for ${studentId}` +
+        `[SESSION] Resuming session ${outcome.sessionId} for ${studentId}` +
           (hasAssignment ? ` on assignment ${assignmentId}` : ' (no assignment / legacy)')
       )
       // A resumed session keeps its ORIGINAL start, so a refresh cannot restart
       // the clock — reloading the page must never buy a student more time.
-      const resumed = candidates.find((s) => s.id === decision.sessionId)!
       res.json({
-        sessionId: decision.sessionId,
+        sessionId: outcome.sessionId,
         status: 'RESUMED',
         resumed: true,
-        ...windowFor(resumed.createdAt),
+        ...windowFor(outcome.createdAt),
       })
       return
     }
 
-    const session = await withRetry(() =>
-      prisma.session.create({
-        data: {
-          studentId,
-          status: 'IN_PROGRESS',
-          // Session 22 (part 2): an EMPTY log means "Tier-1 alerts are being
-          // recorded for this session, none fired yet". NULL (the column's
-          // state for pre-feature rows) means "not recorded" — the report must
-          // never confuse the two.
-          tier1_log: [],
-          // Backward compatible: the hardcoded student-001 dev flow sends neither.
-          ...(hasUserId ? { userId } : {}),
-          ...(hasAssignment ? { assignmentId } : {}),
-        },
-      })
-    )
     debugLog(
-      `[SESSION] Created new session ${session.id} for ${studentId}` +
+      `[SESSION] Created new session ${outcome.sessionId} for ${studentId}` +
         (hasAssignment ? ` on assignment ${assignmentId}` : '')
     )
     res.json({
-      sessionId: session.id,
+      sessionId: outcome.sessionId,
       status: 'CREATED',
       resumed: false,
-      ...windowFor(session.createdAt),
+      ...windowFor(outcome.createdAt),
     })
   } catch (err) {
     if (isTransientDbError(err)) {
@@ -2366,6 +2442,44 @@ function taskSummary(taskId: string, t: TaskBundle) {
  * meaning on a take-home (tab-outs, compile count) — a DISPLAY decision; every
  * metric is still computed and still stored.
  */
+// ── Instructor display: resolve duplicates to the REAL session (gap #71) ────
+// Two overlapping creates can leave an EMPTY phantom beside the session the
+// student actually worked in. Shown side by side, the phantom reads as a second
+// attempt with no data — which is exactly how a submitted exam came to look like
+// it had recorded nothing.
+//
+// The evidence a row carries is already in hand here (these routes select the
+// whole row), so the counts cost no extra query. `dropPhantomDuplicates` then
+// hides ONLY a row that is provably empty AND has a real sibling — the same
+// predicate the one-time cleanup deletes on, so an instructor is never shown a
+// row that later vanishes, and the historical gap #12 duplicates where both rows
+// hold real work are both still shown.
+type EvidenceRow = {
+  id: string
+  status: string
+  studentId: string
+  assignmentId?: string | null
+  playback_log?: unknown
+  tier1_log?: unknown
+  forensicsResults?: unknown
+  runCount?: number | null
+  updatedAt?: Date
+}
+function withEvidence<T extends EvidenceRow>(s: T) {
+  return {
+    ...s,
+    // Not an array should be impossible (the column defaults to []), but -1
+    // means "unknown", and unknown never satisfies the phantom predicate.
+    windowCount: Array.isArray(s.playback_log) ? s.playback_log.length : -1,
+    tier1Count: Array.isArray(s.tier1_log) ? s.tier1_log.length : null,
+    hasForensics: s.forensicsResults != null,
+  }
+}
+/** The identity a duplicate is a duplicate of: (student, assignment). */
+function sessionPairKey(s: EvidenceRow): string {
+  return `${s.assignmentId ?? ''}::${s.studentId}`
+}
+
 function sessionSummary(s: SessionRow, assignmentTypeIn?: string | null) {
   const fr = s.forensicsResults as
     | {
@@ -2472,7 +2586,9 @@ app.get(
       where: { assignmentId },
       orderBy: { updatedAt: 'desc' },
     })
-    res.json(sessions.map((s) => sessionSummary(s, assignment.type)))
+    // Gap #71: never list an empty phantom beside the student's real session.
+    const visible = dropPhantomDuplicates(sessions.map(withEvidence), sessionPairKey)
+    res.json(visible.map((s) => sessionSummary(s, assignment.type)))
   }
 )
 
@@ -2510,15 +2626,19 @@ app.get(
       }),
     ])
 
+    const rows = sessions.map(withEvidence)
     const roster = memberships
       .map((m) => {
         // Prefer the userId link; fall back to studentId === username (the
-        // legacy identity — sessions store the username there). Sessions are
-        // updatedAt-desc, so the first match is the latest.
-        const session =
-          sessions.find((s) => s.userId === m.user.id) ??
-          sessions.find((s) => s.studentId === m.user.username) ??
-          null
+        // legacy identity — sessions store the username there).
+        const byUserId = rows.filter((s) => s.userId === m.user.id)
+        const mine = byUserId.length > 0 ? byUserId : rows.filter((s) => s.studentId === m.user.username)
+        // Gap #71: a duplicate pair must resolve to the row holding the
+        // student's work. Rows arrive updatedAt-desc, and `pickRealSession`
+        // only ever moves a MORE real row ahead of a less real one — so with no
+        // duplicates this is still "the latest", and with duplicates the tile
+        // shows the real session instead of a phantom created 1ms later.
+        const session = pickRealSession(mine)
         const summary = session ? sessionSummary(session, assignment.type) : null
         return {
           userId: m.user.id,
@@ -2559,8 +2679,11 @@ app.get(
       orderBy: { updatedAt: 'desc' },
       include: { assignment: { select: { id: true, title: true, type: true } } },
     })
+    // Gap #71, same rule as the per-assignment list: an empty phantom is never
+    // shown next to the real session it duplicates.
+    const visible = dropPhantomDuplicates(sessions.map(withEvidence), sessionPairKey)
     res.json(
-      sessions.map((s) => ({
+      visible.map((s) => ({
         ...sessionSummary(s, s.assignment?.type ?? null),
         assignmentId: s.assignment?.id ?? null,
         assignmentTitle: s.assignment?.title ?? null,

@@ -46,6 +46,37 @@ describe('decideSessionAction', () => {
   it('creates fresh when the only rows belong to some other status', () => {
     expect(decideSessionAction([{ id: 'x', status: 'ARCHIVED' }]).action).toBe('CREATE')
   })
+
+  // ── Gap #71: a duplicate pair must resume the row holding the work ────────
+  // Two overlapping creates leave an EMPTY phantom beside the real session,
+  // written 1-3ms later — so it sorts FIRST under the caller's updatedAt-desc
+  // order. Resuming it would hand the student a blank editor while their
+  // telemetry sat in the row next to it.
+  it('resumes the row with telemetry, not the empty phantom written after it', () => {
+    const decision = decideSessionAction([
+      { id: 'phantom', status: 'IN_PROGRESS', windowCount: 0, updatedAt: new Date('2026-08-10T12:10:45.650Z') },
+      { id: 'real', status: 'IN_PROGRESS', windowCount: 1, updatedAt: new Date('2026-08-10T12:10:45.648Z') },
+    ])
+    expect(decision).toEqual({ action: 'RESUME', sessionId: 'real' })
+  })
+
+  it('reports the SUBMITTED row that holds the exam, not an empty submitted duplicate', () => {
+    const decision = decideSessionAction([
+      { id: 'empty', status: 'SUBMITTED', windowCount: 0 },
+      { id: 'real', status: 'SUBMITTED', windowCount: 5, hasForensics: true },
+    ])
+    expect(decision).toEqual({ action: 'ALREADY_SUBMITTED', sessionId: 'real' })
+  })
+
+  it('still prefers SUBMITTED over an IN_PROGRESS row that has more telemetry', () => {
+    // The status rule is unchanged and outranks the duplicate resolution: a
+    // student who has submitted sees the locked state, full stop.
+    const decision = decideSessionAction([
+      { id: 'open', status: 'IN_PROGRESS', windowCount: 9 },
+      { id: 'done', status: 'SUBMITTED', windowCount: 1 },
+    ])
+    expect(decision).toEqual({ action: 'ALREADY_SUBMITTED', sessionId: 'done' })
+  })
 })
 
 // ── Fix 2: restore the last FLUSHED workspace — gap #4 ──────────────────────

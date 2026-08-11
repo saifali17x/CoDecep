@@ -19,10 +19,16 @@
 //    states plainly rather than papering over.
 
 import { finalTaskSnapshots } from '../forensics/metrics'
+import { pickRealSession, type ResolvableSessionRow } from './sessionResolution'
 
 export type SessionAction = 'ALREADY_SUBMITTED' | 'RESUME' | 'CREATE'
 
-export interface ExistingSessionRow {
+/**
+ * The telemetry-shaped fields are OPTIONAL: a caller that selects them gets the
+ * duplicate resolution below, and a caller that does not gets exactly the
+ * behavior this had before it existed (first row wins, in the caller's order).
+ */
+export interface ExistingSessionRow extends ResolvableSessionRow {
   id: string
   status: string
 }
@@ -54,11 +60,20 @@ export interface SessionDecision {
  * Pre-fix rows are tolerated rather than migrated: repeated testing left pairs
  * with several rows, so this takes a LIST and picks by rule instead of assuming
  * the invariant already held in the database.
+ *
+ * WITHIN a status, the row carrying the student's actual work wins (gap #71).
+ * A duplicate pair is an EMPTY phantom beside a real session, and resuming the
+ * phantom would strand the student in a blank editor while their telemetry sits
+ * in the row next to it — a data-loss bug wearing the costume of a fresh start.
+ * `pickRealSession` ranks by telemetry first and only falls back to recency, so
+ * a phantom written one millisecond later can never win on being newer. With no
+ * telemetry fields selected the ranking is a no-op and the first row wins, which
+ * is exactly what this did before.
  */
 export function decideSessionAction(rows: ExistingSessionRow[]): SessionDecision {
-  const submitted = rows.find((r) => r.status === 'SUBMITTED')
+  const submitted = pickRealSession(rows.filter((r) => r.status === 'SUBMITTED'))
   if (submitted) return { action: 'ALREADY_SUBMITTED', sessionId: submitted.id }
-  const inProgress = rows.find((r) => r.status === 'IN_PROGRESS')
+  const inProgress = pickRealSession(rows.filter((r) => r.status === 'IN_PROGRESS'))
   if (inProgress) return { action: 'RESUME', sessionId: inProgress.id }
   return { action: 'CREATE', sessionId: null }
 }
