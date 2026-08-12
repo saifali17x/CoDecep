@@ -16,7 +16,16 @@ import { PDFParse } from 'pdf-parse'
 // First local import: every other module that reads process.env at import time
 // loads it too, but keeping it first makes the ordering intentional rather than
 // accidental. Local dev = .env.local; production = Heroku config vars.
-import { loadEnv, describeEnvSource } from './env'
+import {
+  loadEnv,
+  describeEnvSource,
+  describeDatabaseSsl,
+  describeRedisTarget,
+  databaseUrl,
+  databaseSsl,
+  redisConnectionOptions,
+  trustProxySetting,
+} from './env'
 import { validateAST } from './ast/parser'
 import {
   BASELINE_ALLOWLIST,
@@ -175,15 +184,24 @@ const authLimiter = rateLimit({
   message: { error: 'Too many attempts, please try again later' },
 })
 
-// ── Parse REDIS_URL into plain host/port options ───────────────────────────
-const redisUrl = new URL(process.env.REDIS_URL ?? 'redis://localhost:6379')
-const redisConnection = {
-  host: redisUrl.hostname,
-  port: Number(redisUrl.port) || 6379,
-}
+// ── Redis connection for BullMQ ────────────────────────────────────────────
+// Host, port, credentials and TLS, resolved by the ONE policy in env.ts. This
+// used to read the hostname and port and discard the rest, which is correct for
+// local Redis and fatal against Heroku's TLS-only listener (`read ECONNRESET`
+// on a permanent loop). Local `redis://` still resolves to bare host+port.
+const redisConnection = redisConnectionOptions()
 
 // ── Prisma 7 client (adapter-pg pattern) ──────────────────────────────────
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, keepAlive: true })
+// `ssl` is not optional decoration: node-postgres never negotiates TLS on its
+// own, so without it a Heroku connection goes out in plaintext and is refused
+// by pg_hba as P1010 — an error that reads like bad credentials and is not.
+// The policy (and the reason it is not spelled `?sslmode=require`) is in env.ts;
+// against a local database it resolves to `false` and nothing changes.
+const pool = new Pool({
+  connectionString: databaseUrl(),
+  ssl: databaseSsl(),
+  keepAlive: true,
+})
 // Neon kills idle pooled connections; without this listener an idle-client
 // 'error' event would crash the whole process.
 pool.on('error', (err) => console.error('[DB] idle client error:', err.message))
@@ -385,9 +403,18 @@ forensicsWorker.on('failed', (job, err) => {
 // makes Express trust `X-Forwarded-For`, which is correct behind a reverse proxy
 // and DANGEROUS without one, because any client can then set its own apparent
 // address by sending that header. So it is opt-in via env, never assumed.
-if (process.env.TRUST_PROXY === 'true') {
-  app.set('trust proxy', true)
-  console.log('[STARTUP] trust proxy ENABLED — client IP will be read from X-Forwarded-For')
+//
+// It is a HOP COUNT, never `true`. Trusting every hop means the client picks
+// its own apparent address by prepending an X-Forwarded-For entry, which
+// express-rate-limit rejects outright (ERR_ERL_PERMISSIVE_TRUST_PROXY) and
+// which would quietly hand a student a way around the IP restriction an
+// instructor was told to rely on. Heroku's router is exactly one hop.
+const TRUST_PROXY = trustProxySetting()
+if (TRUST_PROXY !== false) {
+  app.set('trust proxy', TRUST_PROXY)
+  console.log(
+    `[STARTUP] trust proxy: ${TRUST_PROXY} hop(s) — client IP read from the last ${TRUST_PROXY} X-Forwarded-For entr${TRUST_PROXY === 1 ? 'y' : 'ies'}`,
+  )
 }
 
 // ── CORS: allowed client origins (gap #61 — deploy prep) ───────────────────
@@ -3098,7 +3125,12 @@ httpServer.listen(PORT, () => {
   console.log(`CoDecep Ingestion Gateway → http://localhost:${PORT}`)
   // Names the config source and the database it resolved to, with credentials
   // stripped — so a run against the wrong database is visible in one line.
-  console.log(`[STARTUP] env: ${describeEnvSource()}`)
+  console.log(`[STARTUP] env: ${describeEnvSource()} — ${describeDatabaseSsl()}`)
+  // Redis the same way. A BullMQ connection that never establishes shows up as
+  // a reconnect loop in the logs and as forensics silently never running — the
+  // one subsystem whose failure is invisible from the UI, since submit returns
+  // 200 either way and only the report stays empty.
+  console.log(`[STARTUP] redis: ${describeRedisTarget()}`)
   // Same discipline for CORS: a deployed client blocked by an origin typo is
   // otherwise a silent browser-console failure with nothing in the server log.
   console.log(
