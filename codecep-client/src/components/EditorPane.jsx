@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import socket from "../socket";
 import { debugLog } from "../debug";
+import { API_BASE } from "../lib/config";
 import { emitKeystroke } from "../lib/liveStream";
 import { badgeOf, kindOf, taskLabel as labelOfTaskId } from "../lib/workspace";
 import { useTheme } from "../context/ThemeContext";
@@ -247,7 +248,7 @@ export default function EditorPane({
     if (isSubmittedRef.current) return; // Immune Phase
     if (!fileName || kindOf(fileName) !== "code") return; // never parse data files
     try {
-      const res = await fetch("http://localhost:3001/api/ast/validate", {
+      const res = await fetch(`${API_BASE}/api/ast/validate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

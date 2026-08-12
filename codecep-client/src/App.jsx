@@ -8,6 +8,7 @@ import ExamTimer from "./components/ExamTimer";
 import FilePanel from "./components/FilePanel";
 import socket from "./socket";
 import { debugLog } from "./debug";
+import { API_BASE } from "./lib/config";
 import * as liveStream from "./lib/liveStream";
 import { runStatusOf } from "./lib/runStatus";
 import { runResultEvents, runNetworkErrorEvents } from "./lib/runConsole";
@@ -320,7 +321,7 @@ function App({
       sessionIdRef.current = sessionIdProp;
       return;
     }
-    fetch("http://localhost:3001/api/session/create", {
+    fetch(`${API_BASE}/api/session/create`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ studentId: STUDENT_ID_EFFECTIVE }),
@@ -462,7 +463,7 @@ function App({
     const id = sessionIdRef.current;
     if (id) {
       try {
-        const res = await fetch(`http://localhost:3001/api/session/${id}/submit`, {
+        const res = await fetch(`${API_BASE}/api/session/${id}/submit`, {
           method: "POST",
         });
         const data = await res.json();
@@ -538,7 +539,7 @@ function App({
       (focusStartRef.current !== null ? Date.now() - focusStartRef.current : 0);
 
     try {
-      const res = await fetch("http://localhost:3001/api/telemetry/submit", {
+      const res = await fetch(`${API_BASE}/api/telemetry/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -683,7 +684,7 @@ function App({
       ],
     }));
     try {
-      const res = await fetch("http://localhost:3001/api/execute", {
+      const res = await fetch(`${API_BASE}/api/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

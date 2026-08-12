@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 .claude
+
+# Environment files — never commit real values. `.env.example` IS committed:
+# it is a template documenting VITE_API_URL, which Vite inlines at build time.
+.env
+.env.*
+!.env.example
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

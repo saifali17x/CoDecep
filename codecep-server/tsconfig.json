@@ -12,5 +12,11 @@
     "resolveJsonModule": true
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  // Tests are excluded from the BUILD only — vitest runs the .ts sources
+  // directly and is unaffected. Two reasons, both surfaced by deploy prep
+  // (gap #61): a production slug should not carry test files, and the compiled
+  // CommonJS copies in dist/ were being collected by vitest's default
+  // `**/*.test.*` glob, where they fail on `require()` of an ESM-only vitest —
+  // so `npm test` broke for anyone who had run `npm run build` first.
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

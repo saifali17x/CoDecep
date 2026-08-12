@@ -1,0 +1,22 @@
+# CoDecep — Heroku process types. TEMPLATE, based on the structure actually
+# found in this repo (2026-08-12); see CLAUDE.md §7.10 for the full report.
+#
+# ONE dyno type, deliberately: the BullMQ forensics worker is created INLINE in
+# src/server.ts (`new Worker('telemetryQueue', ...)`) in the same process as
+# Express, so the web dyno already consumes the queue. There is no separate
+# worker entry point to point a `worker:` line at, and adding one would run a
+# SECOND worker against the same queue.
+#
+# `npm start` is the real production start command (`node dist/server.js`),
+# verified booting against local Postgres + Redis. Heroku's Node buildpack runs
+# the `build` script (tsc → dist/) automatically before this.
+#
+# NOTE — `prisma generate` is NOT currently wired to any npm hook. A deploy must
+# generate the Prisma client before `tsc` runs, e.g. by changing the server's
+# build script to `prisma generate && tsc`. Left unchanged here because that is
+# a package.json change, not a Procfile one.
+web: npm start
+
+# Migrations run once per release, before the new dynos boot. `migrate deploy`
+# is the non-interactive, pooler-safe command (CLAUDE.md §5) — never `migrate dev`.
+release: npx prisma migrate deploy

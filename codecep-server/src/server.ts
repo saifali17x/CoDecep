@@ -389,9 +389,36 @@ if (process.env.TRUST_PROXY === 'true') {
   console.log('[STARTUP] trust proxy ENABLED — client IP will be read from X-Forwarded-For')
 }
 
+// ── CORS: allowed client origins (gap #61 — deploy prep) ───────────────────
+// The deployed client is served from a different origin than the API, so which
+// origins may call this server has to be config, not a constant. Same rule as
+// every other variable here (§7.8): UNSET keeps the previous behavior exactly —
+// any `http://localhost` origin is allowed, which is how the demo runs — and a
+// deploy supplies the real origin(s) through CORS_ORIGIN.
+//
+// Comma-separated so a deploy can allow more than one (e.g. a custom domain
+// alongside the herokuapp.com one). Matching is EXACT on the full origin: a
+// prefix match would let `https://your-app.herokuapp.com.evil.test` through.
+//
+// Setting CORS_ORIGIN REPLACES the localhost default rather than adding to it —
+// production should not be reachable from a developer's local page.
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ?? '')
+  .split(',')
+  .map((entry) => entry.trim().replace(/\/+$/, ''))
+  .filter((entry) => entry.length > 0)
+
+// No `Origin` header at all is a same-origin or non-browser caller (curl, the
+// verification harnesses, a server-to-server request) — never a cross-origin
+// browser request, so it is not CORS's business to refuse it. Unchanged.
+function isOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return true
+  if (ALLOWED_ORIGINS.length === 0) return origin.startsWith('http://localhost')
+  return ALLOWED_ORIGINS.includes(origin.replace(/\/+$/, ''))
+}
+
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || origin.startsWith('http://localhost')) {
+    if (isOriginAllowed(origin)) {
       callback(null, true)
     } else {
       callback(new Error('CORS: origin not allowed'))
@@ -2822,7 +2849,20 @@ app.use((err: unknown, _req: Request, res: Response, _next: express.NextFunction
 // No raw telemetry, no burst data, no keystroke streams go over this channel.
 const httpServer = createServer(app)
 const io = new SocketServer(httpServer, {
-  cors: { origin: 'http://localhost:5173' },
+  // The SAME origin rule the HTTP API uses (`isOriginAllowed`), not a second
+  // copy: the socket connects to this server from the same page, so an origin
+  // the API accepts and the socket refuses is a live DVR that silently never
+  // connects. Unset CORS_ORIGIN keeps this local-only; a deploy sets both at
+  // once because there is only one setting.
+  cors: {
+    origin: (origin, callback) => {
+      if (isOriginAllowed(origin ?? undefined)) {
+        callback(null, true)
+      } else {
+        callback(new Error('CORS: origin not allowed'))
+      }
+    },
+  },
 })
 
 // ── Tier-1 alert recording (Session 22, part 2) ───────────────────────────
@@ -2967,4 +3007,13 @@ httpServer.listen(PORT, () => {
   // Names the config source and the database it resolved to, with credentials
   // stripped — so a run against the wrong database is visible in one line.
   console.log(`[STARTUP] env: ${describeEnvSource()}`)
+  // Same discipline for CORS: a deployed client blocked by an origin typo is
+  // otherwise a silent browser-console failure with nothing in the server log.
+  console.log(
+    `[STARTUP] CORS: ${
+      ALLOWED_ORIGINS.length > 0
+        ? `CORS_ORIGIN → ${ALLOWED_ORIGINS.join(', ')}`
+        : 'unset → http://localhost* (local dev default)'
+    }`
+  )
 })

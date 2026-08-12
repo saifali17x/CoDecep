@@ -1,5 +1,9 @@
 // Tiny fetch helper so pages don't repeat headers/JSON/error boilerplate.
-const BASE = "http://localhost:3001";
+// The base URL comes from lib/config.js (gap #61) — unset VITE_API_URL still
+// resolves to http://localhost:3001, exactly as this constant used to.
+import { API_BASE } from "./config";
+
+const BASE = API_BASE;
 
 // apiFetch(path, { method, body, token })
 // - JSON body is stringified + Content-Type set automatically.
