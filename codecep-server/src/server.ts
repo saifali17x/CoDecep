@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express'
 import cors from 'cors'
+import type { CorsOptionsDelegate } from 'cors'
 import fs from 'fs'
 import path from 'path'
 import { createServer } from 'http'
@@ -407,24 +408,55 @@ const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN ?? '')
   .map((entry) => entry.trim().replace(/\/+$/, ''))
   .filter((entry) => entry.length > 0)
 
-// No `Origin` header at all is a same-origin or non-browser caller (curl, the
-// verification harnesses, a server-to-server request) — never a cross-origin
-// browser request, so it is not CORS's business to refuse it. Unchanged.
-function isOriginAllowed(origin: string | undefined): boolean {
-  if (!origin) return true
-  if (ALLOWED_ORIGINS.length === 0) return origin.startsWith('http://localhost')
-  return ALLOWED_ORIGINS.includes(origin.replace(/\/+$/, ''))
+// SAME-ORIGIN is always allowed, and this clause is what makes the single-app
+// deploy work with NO CORS configuration at all. It is not redundant with the
+// no-Origin case below: browsers omit `Origin` only on same-origin GET/HEAD and
+// SEND it on every same-origin POST — so with the client and API on one Heroku
+// origin, every login, session create and telemetry flush arrives carrying an
+// Origin that `CORS_ORIGIN` would have to name explicitly. Measured before this
+// clause existed: a same-origin POST was refused **403**. Comparing the Origin's
+// host to the request's own Host answers "is this page served by me?", which is
+// precisely the question, and an attacker's page can never satisfy it.
+function isSameOrigin(origin: string, host: string | undefined): boolean {
+  if (!host) return false
+  try {
+    return new URL(origin).host === host
+  } catch {
+    return false // unparseable Origin is not same-origin; fall through to the list
+  }
 }
 
-app.use(cors({
-  origin: (origin, callback) => {
-    if (isOriginAllowed(origin)) {
-      callback(null, true)
-    } else {
-      callback(new Error('CORS: origin not allowed'))
-    }
-  },
-}))
+// No `Origin` header at all is a same-origin GET or a non-browser caller (curl,
+// the verification harnesses, a server-to-server request) — never a
+// cross-origin browser request, so it is not CORS's business to refuse it.
+function isOriginAllowed(origin: string | undefined, host?: string): boolean {
+  if (!origin) return true
+  const normalized = origin.replace(/\/+$/, '')
+  if (isSameOrigin(normalized, host)) return true
+  if (ALLOWED_ORIGINS.length === 0) return normalized.startsWith('http://localhost')
+  return ALLOWED_ORIGINS.includes(normalized)
+}
+
+// ONE delegate, used by BOTH the Express middleware and the Socket.io handshake
+// (engine.io accepts a `CorsOptionsDelegate` too). The delegate form is what
+// gives the rule access to the REQUEST, and therefore to `Host` — the
+// origin-only callback signature cannot see it. Two surfaces, one rule: an
+// origin the API accepts and the socket refuses is a live DVR that silently
+// never connects.
+// Typed against cors's base `CorsRequest` (headers only) rather than Express's
+// Request, because engine.io's option takes the base type — and headers are all
+// this reads, so the narrower type would buy nothing and fit neither caller.
+const corsDelegate: CorsOptionsDelegate = (req, callback) => {
+  const origin = req.headers?.origin as string | undefined
+  const host = req.headers?.host as string | undefined
+  if (isOriginAllowed(origin, host)) {
+    callback(null, { origin: true }) // reflect the caller's origin
+  } else {
+    callback(new Error('CORS: origin not allowed'))
+  }
+}
+
+app.use(cors(corsDelegate))
 
 // Session 24 — the default 100kb JSON limit is no longer enough. Telemetry
 // Capture v2 stores the exact inserted text per keystroke, so a 30s flush is
@@ -2817,6 +2849,74 @@ app.get('/api/assignments/:id/pdf', requireAuth, async (req: Request, res: Respo
     .pipe(res)
 })
 
+// ── Single-app production serving: the API and the client, one origin ──────
+// In production ONE dyno serves both, which is what makes CORS between client
+// and server moot (the browser's calls become same-origin and carry no Origin
+// header at all — a case `isOriginAllowed` has always permitted).
+//
+// PRODUCTION ONLY, and the guard is load-bearing: in dev the Vite server owns
+// the client on :5173 with HMR, and `codecep-client/dist` is either absent or a
+// stale build from the last production check. Serving it locally would hand a
+// developer yesterday's bundle with no hot reload and no obvious reason why.
+//
+// PLACEMENT is the whole correctness story. This sits AFTER every API route and
+// BEFORE the JSON 404, so:
+//   - /api/*                → already matched and returned above; never reaches here
+//   - /socket.io/*          → handled by the Socket.io server on the SAME httpServer,
+//                             which intercepts before Express routing entirely
+//   - a real asset          → express.static serves it
+//   - any other GET         → index.html, so the React router resolves it
+//   - anything unmatched    → falls through to the JSON 404 unchanged
+const SERVE_CLIENT = process.env.NODE_ENV === 'production'
+
+if (SERVE_CLIENT) {
+  // Resolved ABSOLUTELY from this file, never from cwd: Heroku starts the
+  // process from the repo root while the compiled server lives in
+  // codecep-server/dist, and a relative path would silently resolve to nothing.
+  // Both candidates are the same directory — `src` (tsx) and `dist` (node) sit
+  // at the same depth — but they are listed explicitly so a future move of
+  // either fails loudly here rather than as a blank page.
+  const CLIENT_DIST_CANDIDATES = [
+    path.resolve(__dirname, '../../codecep-client/dist'),
+    path.resolve(process.cwd(), 'codecep-client/dist'),
+  ]
+  const clientDist = CLIENT_DIST_CANDIDATES.find((dir) =>
+    fs.existsSync(path.join(dir, 'index.html'))
+  )
+
+  if (!clientDist) {
+    // Do NOT crash the API over a missing frontend: the exam pipeline, the
+    // worker and every instructor route are still fully functional without it,
+    // and a dyno that refuses to boot is strictly worse than one serving JSON.
+    console.error(
+      '[STARTUP] NODE_ENV=production but no client build found — API only. Looked in: ' +
+      CLIENT_DIST_CANDIDATES.join(', ')
+    )
+  } else {
+    console.log(`[STARTUP] serving client build from ${clientDist}`)
+
+    // Hashed assets (Vite content-hashes every file under /assets) can be cached
+    // hard; index.html must NOT be, or a deploy leaves browsers on the old
+    // bundle pointing at asset filenames that no longer exist.
+    app.use(express.static(clientDist, { index: false, maxAge: '1y' }))
+
+    app.get(/.*/, (req: Request, res: Response, next: express.NextFunction) => {
+      // Express 5 runs on path-to-regexp v8, where a bare '*' path is no longer
+      // valid — hence the RegExp. Everything below is a refusal to serve HTML
+      // where HTML would be the wrong answer.
+      if (req.path.startsWith('/api/') || req.path.startsWith('/socket.io/')) return next()
+      // A missing asset must 404 as an asset. Answering index.html here is the
+      // classic SPA bug: a mistyped script URL returns 200 HTML, and the browser
+      // reports "Unexpected token '<'" instead of the 404 that would explain it.
+      if (req.path.includes('.')) return next()
+      // NOTE: /legacy IS served from here, deliberately. It is a CLIENT route
+      // (main.jsx: '/legacy' → propless <App>) with no server handler, so
+      // excluding it would 404 the dev flow in production.
+      res.sendFile(path.join(clientDist, 'index.html'))
+    })
+  }
+}
+
 // ── 404 + global error handling (END of middleware chain) ─────────────────
 // Every unmatched route and every uncaught error returns JSON — never the
 // Express HTML error page (kills the frontend "Unexpected token '<'" class).
@@ -2849,20 +2949,12 @@ app.use((err: unknown, _req: Request, res: Response, _next: express.NextFunction
 // No raw telemetry, no burst data, no keystroke streams go over this channel.
 const httpServer = createServer(app)
 const io = new SocketServer(httpServer, {
-  // The SAME origin rule the HTTP API uses (`isOriginAllowed`), not a second
-  // copy: the socket connects to this server from the same page, so an origin
-  // the API accepts and the socket refuses is a live DVR that silently never
-  // connects. Unset CORS_ORIGIN keeps this local-only; a deploy sets both at
-  // once because there is only one setting.
-  cors: {
-    origin: (origin, callback) => {
-      if (isOriginAllowed(origin ?? undefined)) {
-        callback(null, true)
-      } else {
-        callback(new Error('CORS: origin not allowed'))
-      }
-    },
-  },
+  // The SAME delegate the HTTP API uses, not a second copy: the socket connects
+  // to this server from the same page, so an origin the API accepts and the
+  // socket refuses is a live DVR that silently never connects. It also inherits
+  // the same-origin clause, which is what lets the ghost typer work on the
+  // single-app deploy with no CORS configuration at all.
+  cors: corsDelegate,
 })
 
 // ── Tier-1 alert recording (Session 22, part 2) ───────────────────────────

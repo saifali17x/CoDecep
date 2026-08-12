@@ -23,9 +23,12 @@ import { createFixtureUser, deleteFixtureUsers, hashFixturePassword, makeTag } f
 
 loadEnv()
 
-const API = 'http://localhost:3001'
-const PROGRAM = '#include <iostream>\nint main(){ int a,b; std::cin>>a>>b; std::cout<<a+b; return 0; }'
-const ORIGIN = 'http://localhost:5173' // what the vite dev client sends
+const API = process.env.VERIFY_API ?? 'http://localhost:3001'
+// The origin the "browser" claims. Default is the vite dev server (the
+// two-origin dev shape); set VERIFY_ORIGIN to the API's own origin to exercise
+// the SAME-ORIGIN single-app production shape instead.
+const PROGRAM ='#include <iostream>\nint main(){ int a,b; std::cin>>a>>b; std::cout<<a+b; return 0; }'
+const ORIGIN = process.env.VERIFY_ORIGIN ?? 'http://localhost:5173'
 
 let passed = 0
 let failed = 0
