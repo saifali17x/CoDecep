@@ -10,8 +10,8 @@
   "scripts": {
     "heroku-postbuild": "npm run build",
     "build": "npm run build:client && npm run build:server",
-    "build:client": "npm --prefix codecep-client install && npm --prefix codecep-client run build",
-    "build:server": "npm --prefix codecep-server install --legacy-peer-deps && npm --prefix codecep-server run build",
+    "build:client": "npm --prefix codecep-client install --include=dev && npm --prefix codecep-client run build",
+    "build:server": "npm --prefix codecep-server install --include=dev --legacy-peer-deps && npm --prefix codecep-server run build",
     "start": "npm --prefix codecep-server start",
     "migrate:deploy": "npm --prefix codecep-server run migrate:deploy"
   }
